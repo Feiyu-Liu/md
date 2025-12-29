@@ -11,6 +11,7 @@ A high-performance, lightweight Markdown parser and renderer specifically design
 ## 🌟 Features
 
 - **🚀 High Performance**: Optimized parsing with minimal memory footprint
+- **⚡ Streaming Support**: Incremental parsing for real-time LLM output ([docs](doc/streaming_markdown_decoder.md))
 - **🎨 Fully Customizable**: Theme-based styling with complete control over appearance
 - **📱 Flutter Native**: Built from the ground up for Flutter with custom render objects
 - **🔗 Interactive Elements**: Clickable links with customizable tap handlers
@@ -250,6 +251,33 @@ MarkdownThemeData(
   },
 )
 ```
+
+### Streaming Markdown for LLM Output
+
+Perfect for real-time display of AI-generated content:
+
+```dart
+final decoder = StreamingMarkdownDecoder();
+
+// Stream from LLM
+openai.chat.stream(messages: [...]).listen((chunk) {
+  final content = chunk.choices.first.delta.content;
+  if (content != null) {
+    final markdown = decoder.append(content);
+    setState(() => _displayedMarkdown = markdown);
+  }
+});
+
+// Reset for new conversation
+decoder.reset();
+```
+
+**Performance Benefits:**
+- Only re-parses open (incomplete) blocks
+- Skips closed blocks for optimal performance
+- Handles partial lines and varying chunk sizes
+
+**[📖 Full Documentation](doc/streaming_markdown_decoder.md)**
 
 ## 📱 Platform Support
 

@@ -38,252 +38,387 @@ class ParsedLine {
   String toString() => 'ParsedLine($text, $state)';
 }
 
+// ============================================================================
+// Shared Parsing Logic
+// ============================================================================
+
+/// Regular expression pattern to match empty lines.
+final RegExp _emptyPattern = RegExp(r'^(?:[ \t]*)$');
+
+/// Leading `#` define atx-style headers (1-6 levels).
+final RegExp _headerPattern = RegExp(r'^(#{1,6})');
+
+/// Pattern to match list items (ordered and unordered).
+final RegExp _listPattern = RegExp(
+    r'^(?<indent>[ \t]{0,8})(?<marker>(\d{1,9})[\.)]|[*+-])(?<text>[ \t]+(.*))?$');
+
+/// Callback type for when a block is closed (lines [start] to [end] exclusive).
+typedef OnBlockClosed = void Function(int start, int end);
+
+/// Callback type for when a code block is found but not closed.
+/// Returns true to continue parsing, false to break.
+typedef OnCodeBlockOpen = bool Function(int startLine, String language);
+
+/// Result of parsing markdown lines.
+class _ParseResult {
+  const _ParseResult({
+    required this.blocks,
+    required this.nextIndex,
+    this.hasOpenCodeBlock = false,
+  });
+
+  final List<MD$Block> blocks;
+  final int nextIndex;
+  final bool hasOpenCodeBlock;
+}
+
+/// Core parsing function shared by both [MarkdownDecoder] and
+/// [StreamingMarkdownDecoder].
+///
+/// Parameters:
+/// - [length]: Total number of lines
+/// - [lineAt]: Function to get line text at index
+/// - [startIndex]: Index to start parsing from
+/// - [existingBlocks]: Optional existing blocks to append to
+/// - [onBlockClosed]: Optional callback when a block is closed
+/// - [onCodeBlockOpen]: Optional callback when code block is open (not closed)
+_ParseResult _parseMarkdownLines({
+  required int length,
+  required String Function(int index) lineAt,
+  int startIndex = 0,
+  List<MD$Block>? existingBlocks,
+  OnBlockClosed? onBlockClosed,
+  OnCodeBlockOpen? onCodeBlockOpen,
+}) {
+  final blocks = existingBlocks ?? <MD$Block>[];
+  final paragraph = StringBuffer();
+  var hasOpenCodeBlock = false;
+
+  void maybeCommitParagraph() {
+    if (paragraph.isEmpty) return;
+    final text = paragraph.toString();
+    paragraph.clear();
+    blocks.add(MD$Paragraph(
+      text: text,
+      spans: _parseInlineSpans(text),
+    ));
+  }
+
+  void pushBlock(MD$Block block) {
+    maybeCommitParagraph();
+    blocks.add(block);
+  }
+
+  var i = startIndex;
+  for (; i < length; i++) {
+    final line = lineAt(i);
+
+    // --- Empty lines / Spacer ---
+    if (line.isEmpty || _emptyPattern.hasMatch(line)) {
+      var j = i + 1;
+      for (; j < length && _emptyPattern.hasMatch(lineAt(j)); j++) continue;
+      final count = j - i;
+
+      if (j < length) {
+        onBlockClosed?.call(i, j);
+      }
+
+      pushBlock(MD$Spacer(count: count));
+      if (i + count == length) break;
+      i = j - 1;
+      continue;
+    }
+
+    // --- Horizontal rule ---
+    if (line.startsWith('---')) {
+      if (i + 1 < length) {
+        onBlockClosed?.call(i, i + 1);
+      }
+      pushBlock(const MD$Divider());
+      continue;
+    }
+
+    // --- Heading ---
+    if (line.startsWith('#')) {
+      final level =
+          _headerPattern.firstMatch(line)?.group(0)?.length.clamp(1, 6) ?? 1;
+      final text = line.substring(level).trim();
+
+      if (i + 1 < length) {
+        onBlockClosed?.call(i, i + 1);
+      }
+
+      pushBlock(MD$Heading(
+        level: level,
+        text: text,
+        spans: _parseInlineSpans(text),
+      ));
+      continue;
+    }
+
+    // --- Quote ---
+    if (line.startsWith('>')) {
+      final buffer = StringBuffer()..write(line.substring(1).trim());
+      var j = i + 1;
+      for (; j < length && lineAt(j).startsWith('>'); j++) {
+        buffer
+          ..writeln()
+          ..write(lineAt(j).substring(1).trim());
+      }
+      final text = buffer.toString();
+      final count = j - i;
+
+      if (j < length) {
+        onBlockClosed?.call(i, j);
+      }
+
+      pushBlock(MD$Quote(
+        indent: 1,
+        text: text,
+        spans: _parseInlineSpans(text),
+      ));
+
+      if (i + count == length) break;
+      i = j - 1;
+      continue;
+    }
+
+    // --- Code block ---
+    if (line.startsWith('```')) {
+      final language = line.length > 3 ? line.substring(3).trim() : '';
+      var j = i + 1;
+      for (; j < length && !lineAt(j).startsWith('```'); j++) continue;
+
+      final foundClosing = j < length;
+
+      if (foundClosing) {
+        onBlockClosed?.call(i, j + 1);
+        final codeLines = <String>[];
+        for (var k = i + 1; k < j; k++) {
+          codeLines.add(lineAt(k));
+        }
+        pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+
+        if (j == length - 1) break;
+        i = j;
+      } else {
+        // Code block not closed
+        hasOpenCodeBlock = true;
+        if (onCodeBlockOpen != null) {
+          final shouldContinue = onCodeBlockOpen(i, language);
+          if (!shouldContinue) {
+            // Add partial code block and break
+            final codeLines = <String>[];
+            for (var k = i + 1; k < length; k++) {
+              codeLines.add(lineAt(k));
+            }
+            pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+            i = length;
+            break;
+          }
+        } else {
+          // Default behavior: treat as complete (for non-streaming)
+          final codeLines = <String>[];
+          for (var k = i + 1; k < length; k++) {
+            codeLines.add(lineAt(k));
+          }
+          pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+          i = length - 1;
+        }
+      }
+      continue;
+    }
+
+    // --- List ---
+    if (_listPattern.firstMatch(line) case RegExpMatch match
+        when match.namedGroup('indent')?.isEmpty == true) {
+      final marker = match.namedGroup('marker') ?? '*';
+      final list = <({int intent, String marker, String text})>[
+        (
+          intent: 0,
+          marker: marker,
+          text: match.namedGroup('text')?.trim() ?? '',
+        )
+      ];
+
+      var j = i + 1;
+      for (; j < length; j++) {
+        final listLine = lineAt(j);
+        final listMatch = _listPattern.firstMatch(listLine);
+        final indent = listMatch?.namedGroup('indent')?.length;
+        if (indent == null) break;
+        list.add((
+          intent: indent,
+          marker: listMatch?.namedGroup('marker') ?? '*',
+          text: listMatch?.namedGroup('text')?.trim() ?? '',
+        ));
+      }
+
+      // Convert to tree structure
+      var offset = 0;
+      List<MD$ListItem> traverse({int indent = 0}) {
+        final items = <MD$ListItem>[];
+        for (; offset < list.length; offset++) {
+          final item = list[offset];
+          if (item.intent == indent) {
+            items.add(MD$ListItem(
+              text: item.text,
+              marker: item.marker,
+              spans: _parseInlineSpans(item.text),
+              indent: item.intent,
+            ));
+          } else if (item.intent > indent) {
+            final children = traverse(indent: item.intent);
+            if (items.isNotEmpty) {
+              items.last = items.last.copyWith(
+                  children: List<MD$ListItem>.unmodifiable(children));
+            } else {
+              items.add(MD$ListItem(
+                marker: item.marker,
+                text: item.text,
+                spans: _parseInlineSpans(item.text),
+                indent: item.intent,
+                children: children,
+              ));
+            }
+          } else {
+            offset--;
+            break;
+          }
+        }
+        return items.isEmpty ? const <MD$ListItem>[] : items;
+      }
+
+      final count = j - i;
+      final listLines = <String>[];
+      for (var k = i; k < j && k < length; k++) {
+        listLines.add(lineAt(k));
+      }
+
+      if (j < length) {
+        onBlockClosed?.call(i, j);
+      }
+
+      pushBlock(MD$List(text: listLines.join('\n'), items: traverse()));
+
+      if (i + count == length) break;
+      i = j - 1;
+      continue;
+    }
+
+    // --- Table ---
+    if (line.startsWith('|')) {
+      MD$TableRow textToRow(String text) {
+        final cells = text.split('|');
+        return MD$TableRow(
+          text: text,
+          cells: List<List<MD$Span>>.unmodifiable(cells
+              .sublist(1, cells.length - 1)
+              .map((cell) => cell.trim())
+              .map(_parseInlineSpans)),
+        );
+      }
+
+      final header = textToRow(line);
+      final separator = length > i + 1
+          ? RegExp(r'^\|[ -:]+[ -|:]*\|$').hasMatch(lineAt(i + 1))
+          : false;
+      final rows = <MD$TableRow>[];
+      var j = i + 2;
+      for (; j < length && lineAt(j).startsWith('|'); j++) {
+        rows.add(textToRow(lineAt(j)));
+      }
+
+      final columns = header.cells.length;
+      if (columns > 0 &&
+          separator &&
+          rows.every((row) => row.cells.length == columns)) {
+        final tableLines = <String>[];
+        for (var k = i; k < j && k < length; k++) {
+          tableLines.add(lineAt(k));
+        }
+
+        if (j < length) {
+          onBlockClosed?.call(i, j);
+        }
+
+        pushBlock(MD$Table(
+          text: tableLines.join('\n'),
+          header: header,
+          rows: List<MD$TableRow>.unmodifiable(rows),
+        ));
+      } else {
+        // Malformed table, treat as paragraph
+        if (paragraph.isNotEmpty) paragraph.writeln();
+        paragraph.write(line);
+        continue;
+      }
+
+      final count = j - i;
+      if (i + count == length) break;
+      i = j - 1;
+      continue;
+    }
+
+    // --- Paragraph (default) ---
+    if (paragraph.isNotEmpty) paragraph.writeln();
+    paragraph.write(line);
+
+    // Check if paragraph can be closed
+    if (onBlockClosed != null && i + 1 < length) {
+      final nextLine = lineAt(i + 1);
+      if (nextLine.isEmpty ||
+          _emptyPattern.hasMatch(nextLine) ||
+          nextLine.startsWith('#') ||
+          nextLine.startsWith('>') ||
+          nextLine.startsWith('```') ||
+          nextLine.startsWith('---') ||
+          nextLine.startsWith('|') ||
+          (_listPattern.firstMatch(nextLine)?.namedGroup('indent')?.isEmpty ==
+              true)) {
+        onBlockClosed(i, i + 1);
+        maybeCommitParagraph();
+      }
+    }
+  }
+
+  maybeCommitParagraph();
+
+  return _ParseResult(
+    blocks: blocks,
+    nextIndex: i,
+    hasOpenCodeBlock: hasOpenCodeBlock,
+  );
+}
+
+// ============================================================================
+// MarkdownDecoder
+// ============================================================================
+
 /// {@template markdown_decoder}
 /// A [Converter] that decodes Markdown formatted strings
 /// into list of [MD$Block] objects.
 /// This class is designed to parse Markdown syntax
-/// and convert it into a structured format
+/// and convert it into a structured format.
 /// {@endtemplate}
 class MarkdownDecoder extends Converter<String, Markdown> {
   /// Creates a new instance of [MarkdownDecoder].
   /// {@macro markdown_decoder}
   const MarkdownDecoder();
 
-  /// A regular expression pattern to match empty lines.
-  static final RegExp _emptyPattern = RegExp(r'^(?:[ \t]*)$');
-
-  /// Leading (and trailing) `#` define atx-style headers.
-  ///
-  /// Starts with 1-6 unescaped `#` characters which must not be followed by a
-  /// non-space character. Line may end with any number of `#` characters,.
-  static final RegExp _headerPattern = RegExp(r'^(#{1,6})');
-
-  /// A regular expression pattern to match ordered lists.
-  /// Matches lines that start with a number followed by a period
-  /// or parenthesis, or with a bullet point (`*`, `+`, or `-`).
-  static final RegExp _listPattern = RegExp(
-      r'^(?<indent>[ \t]{0,8})(?<marker>(\d{1,9})[\.)]|[*+-])(?<text>[ \t]+(.*))?$');
-
   @override
   Markdown convert(String input) {
     final lines = LineSplitter.split(input).toList(growable: false);
     if (lines.isEmpty) return const Markdown.empty();
-    final blocks = Queue<MD$Block>(); // Queue to accumulate blocks
-    final length = lines.length;
 
-    final paragraph = StringBuffer(); // To accumulate lines for paragraphs
-
-    void maybeCommitParagraph() {
-      if (paragraph.isEmpty) return;
-      final text = paragraph.toString();
-      paragraph.clear();
-      blocks.addLast(MD$Paragraph(
-        text: text,
-        spans: _parseInlineSpans(text),
-      ));
-    }
-
-    void pushBlock(MD$Block block) {
-      maybeCommitParagraph();
-      blocks.addLast(block);
-    }
-
-    for (var i = 0; i < length; i++) {
-      // Trim trailing whitespace for consistent parsing
-      final line = lines[i];
-
-      // Here you would implement the logic to parse the line
-      // and create the appropriate MD$Block instances.
-      // This is a placeholder for demonstration purposes.
-      if (line.isEmpty || _emptyPattern.hasMatch(line)) {
-        /// Parse empty lines and combine them into a spacing block.
-        var j = i + 1;
-        for (; j < length && _emptyPattern.hasMatch(lines[j]); j++) continue;
-        final count = j - i;
-        pushBlock(MD$Spacer(count: count));
-        if (i + count == length) break; // Last line is empty
-        i = j - 1; // Skip the empty lines
-        continue;
-      } else if (line.startsWith('---')) {
-        // Parse horizontal rules
-        pushBlock(const MD$Divider());
-        continue;
-      } else if (line.startsWith('#')) {
-        // Parse headings
-        final level =
-            _headerPattern.firstMatch(line)?.group(0)?.length.clamp(1, 6) ?? 1;
-        final text = line.substring(level).trim();
-        pushBlock(MD$Heading(
-            level: level, text: text, spans: _parseInlineSpans(text)));
-        continue;
-      } else if (line.startsWith('>')) {
-        // Parse quotes
-        final buffer = StringBuffer()..write(line.substring(1).trim());
-        var j = i + 1;
-        for (; j < length && lines[j].startsWith('>'); j++) {
-          buffer
-            ..writeln()
-            ..write(lines[j].substring(1).trim());
-        }
-        final text = buffer.toString();
-        final count = j - i;
-        // TODO(plugfox): Implement indentation for quotes
-        // Mike Matiunin <plugfox@gmail.com>, 16 June 2025
-        pushBlock(MD$Quote(
-          indent: 1, // Indentation level for quotes
-          text: text,
-          spans: _parseInlineSpans(text),
-        ));
-        if (i + count == length) break; // Last line is quote
-        i = j - 1; // Skip the empty lines
-        continue;
-      } else if (line.startsWith('```')) {
-        // Parse code blocks
-        final language = line.length > 3 ? line.substring(3).trim() : '';
-        var j = i + 1;
-        for (; j < length && !lines[j].startsWith('```'); j++) continue;
-        final codeText = lines.sublist(i + 1, j).join('\n');
-        pushBlock(MD$Code(
-          text: codeText,
-          language: language,
-        ));
-        if (j == length - 1) break; // Last line is a code block
-        i = j; // Skip to the end of the code block
-        continue;
-      } else if (_listPattern.firstMatch(line) case RegExpMatch match
-          when match.namedGroup('indent')?.isEmpty == true) {
-        final marker = match.namedGroup('marker') ?? '*';
-        final list = <({int intent, String marker, String text})>[
-          (
-            intent: 0,
-            marker: marker,
-            text: match.namedGroup('text')?.trim() ?? '',
-          )
-        ];
-        var j = i + 1;
-        for (; j < length; j++) {
-          final line = lines[j];
-          final match = _listPattern.firstMatch(line);
-          final indent = match?.namedGroup('indent')?.length;
-          if (indent == null) break;
-          list.add((
-            intent: indent,
-            marker: match?.namedGroup('marker') ?? '*',
-            text: match?.namedGroup('text')?.trim() ?? '',
-          ));
-        }
-        // Convert to tree structure of [MD$ListItem]s
-        var offset = 0;
-        List<MD$ListItem> traverse({int indent = 0}) {
-          final items = <MD$ListItem>[];
-          for (; offset < list.length; offset++) {
-            final item = list[offset];
-            if (item.intent == indent) {
-              // If the current item's indent matches,
-              // we create a new list item at this level.
-              items.add(MD$ListItem(
-                text: item.text,
-                marker: item.marker, // '•',
-                spans: _parseInlineSpans(item.text),
-                indent: item.intent,
-              ));
-            } else if (item.intent > indent) {
-              // If the current item's indent is greater,
-              // we continue traversing deeper into the list.
-              final children = traverse(indent: item.intent);
-              if (items.isNotEmpty) {
-                // If we have a parent item, add children to it
-                items.last = items.last.copyWith(
-                    children: List<MD$ListItem>.unmodifiable(children));
-              } else {
-                // If this is the first item, just add children
-                items.add(MD$ListItem(
-                  marker: item.marker, // '•',
-                  text: item.text,
-                  spans: _parseInlineSpans(item.text),
-                  indent: item.intent,
-                  children: children,
-                ));
-              }
-            } else {
-              // If the indent is less, we stop traversing
-              offset--; // Step back to reprocess this item
-              break;
-            }
-          }
-          if (items.isEmpty) return const <MD$ListItem>[];
-          return items; // Return the list of items at this level
-        }
-
-        // Create the list block with the items
-        final count = j - i;
-        final text = lines.sublist(i, j).join('\n');
-        pushBlock(MD$List(
-          text: text,
-          items: traverse(),
-        ));
-
-        if (i + count == length) break; // Last line is a list item
-        i = j - 1; // Skip the list items
-        continue;
-      } else if (line.startsWith('|')) {
-        // Parse tables
-        MD$TableRow textToRow(String text) {
-          final cells = text.split('|');
-          return MD$TableRow(
-            text: text,
-            cells: List<List<MD$Span>>.unmodifiable(cells
-                .sublist(1, cells.length - 1)
-                .map((cell) => cell.trim())
-                .map(_parseInlineSpans)),
-          );
-        }
-
-        final header = textToRow(line);
-        final separator = lines.length > i + 1
-            ? RegExp(r'^\|[ -:]+[ -|:]*\|$').hasMatch(lines[i + 1])
-            : false; // Separator line for the table header
-        final rows = <MD$TableRow>[];
-        var j = i + 2; // Skip the header and separator line
-        for (; j < length && lines[j].startsWith('|'); j++)
-          rows.add(textToRow(lines[j]));
-        // Validate
-        final columns = header.cells.length;
-        if (columns > 0 &&
-            separator &&
-            rows.every((row) => row.cells.length == columns)) {
-          // All rows have the same number of cells as the header
-          final text = lines.sublist(i, j).join('\n');
-          pushBlock(MD$Table(
-            text: text,
-            header: header,
-            rows: List<MD$TableRow>.unmodifiable(rows),
-          ));
-        } else {
-          // Table is malformed, treat it as a paragraph
-          if (paragraph.isNotEmpty) paragraph.writeln();
-          paragraph.write(line);
-          continue;
-        }
-
-        final count = j - i;
-        if (i + count == length) break; // Last line is a table row
-        i = j - 1; // Skip the table rows
-        continue;
-      } else {
-        // Parse paragraphs or other blocks
-        if (paragraph.isNotEmpty) paragraph.writeln();
-        paragraph.write(line);
-        continue;
-      }
-    }
-
-    // If there's any remaining text in the paragraph buffer, commit it
-    maybeCommitParagraph();
+    final result = _parseMarkdownLines(
+      length: lines.length,
+      lineAt: (i) => lines[i],
+    );
 
     return Markdown(
       markdown: input,
-      blocks: List<MD$Block>.unmodifiable(blocks),
+      blocks: List<MD$Block>.unmodifiable(result.blocks),
     );
   }
 }
@@ -630,8 +765,8 @@ List<MD$Span> _parseInlineSpans(String text) {
 /// this decoder maintains state across multiple [append] calls and only
 /// re-parses lines that are still open (not yet closed).
 ///
-/// The core parsing logic is the same as [MarkdownDecoder], but with
-/// line state tracking added at block closure points.
+/// Uses the same core parsing logic as [MarkdownDecoder] via
+/// [_parseMarkdownLines], but with line state tracking.
 ///
 /// Usage:
 /// ```dart
@@ -655,17 +790,6 @@ class StreamingMarkdownDecoder {
 
   /// Index of the first open line, used to skip closed lines during parsing.
   int _firstOpenIndex = 0;
-
-  /// Regular expression pattern to match empty lines.
-  static final RegExp _emptyPattern = RegExp(r'^(?:[ \t]*)$');
-
-  /// Leading `#` define atx-style headers (1-6 levels).
-  static final RegExp _headerPattern = RegExp(r'^(#{1,6})');
-
-  /// Pattern to match list items (ordered and unordered).
-  static final RegExp _listPattern = RegExp(
-      r'^(?<indent>[ \t]{0,8})(?<marker>(\d{1,9})[\.)]|[*+-])'
-      r'(?<text>[ \t]+(.*))?$');
 
   /// Returns the current list of parsed blocks.
   List<MD$Block> get blocks => List.unmodifiable(_blocks);
@@ -734,310 +858,45 @@ class StreamingMarkdownDecoder {
     for (var k = start; k < end && k < _lines.length; k++) {
       _lines[k].state = LineState.closed;
     }
+    if (end <= _lines.length) {
+      _firstOpenIndex = end;
+    }
   }
 
-  /// Main parsing method - reuses the same logic as MarkdownDecoder.convert()
-  /// but with line state tracking at closure points.
+  /// Main parsing method using the shared [_parseMarkdownLines] function.
   void _parse() {
     // Remove blocks from _firstOpenIndex onwards (need to re-parse)
     _truncateBlocks();
 
-    final length = _lines.length;
-    final paragraph = StringBuffer();
-
-    // Helper: get line text at index
-    String lineAt(int idx) => _lines[idx].text;
-
-    void maybeCommitParagraph() {
-      if (paragraph.isEmpty) return;
-      final text = paragraph.toString();
-      paragraph.clear();
-      _blocks.add(MD$Paragraph(
-        text: text,
-        spans: _parseInlineSpans(text),
-      ));
+    // Skip already closed lines
+    while (_firstOpenIndex < _lines.length &&
+        _lines[_firstOpenIndex].state == LineState.closed) {
+      _firstOpenIndex++;
     }
 
-    void pushBlock(MD$Block block) {
-      maybeCommitParagraph();
-      _blocks.add(block);
-    }
+    final result = _parseMarkdownLines(
+      length: _lines.length,
+      lineAt: (i) => _lines[i].text,
+      startIndex: _firstOpenIndex,
+      existingBlocks: _blocks,
+      onBlockClosed: _closeLines,
+      onCodeBlockOpen: (startLine, language) {
+        // Don't continue parsing, break to wait for more input
+        return false;
+      },
+    );
 
-    // Main parsing loop - same structure as MarkdownDecoder.convert()
-    for (var i = _firstOpenIndex; i < length; i++) {
-      final pline = _lines[i];
-
-      // Skip closed lines and update _firstOpenIndex
-      if (pline.state == LineState.closed) {
-        _firstOpenIndex = i + 1;
-        continue;
-      }
-
-      final line = pline.text;
-
-      // --- Empty lines / Spacer ---
-      if (line.isEmpty || _emptyPattern.hasMatch(line)) {
-        var j = i + 1;
-        for (; j < length && _emptyPattern.hasMatch(lineAt(j)); j++) continue;
-        final count = j - i;
-
-        // Closure check: has content after spacer
-        if (j < length) {
-          _closeLines(i, j);
-          _firstOpenIndex = j;
-        }
-
-        pushBlock(MD$Spacer(count: count));
-        if (i + count == length) break;
-        i = j - 1;
-        continue;
-      }
-
-      // --- Horizontal rule ---
-      if (line.startsWith('---')) {
-        // Single line, close if not last
-        if (i + 1 < length) {
-          _closeLines(i, i + 1);
+    // Update _firstOpenIndex based on parse result
+    if (result.nextIndex > _firstOpenIndex && !result.hasOpenCodeBlock) {
+      // If we parsed some lines and no open code block, update index
+      for (var i = _firstOpenIndex;
+          i < result.nextIndex && i < _lines.length;
+          i++) {
+        if (_lines[i].state == LineState.closed) {
           _firstOpenIndex = i + 1;
-        }
-        pushBlock(const MD$Divider());
-        continue;
-      }
-
-      // --- Heading ---
-      if (line.startsWith('#')) {
-        final level =
-            _headerPattern.firstMatch(line)?.group(0)?.length.clamp(1, 6) ?? 1;
-        final text = line.substring(level).trim();
-
-        // Single line, close if not last
-        if (i + 1 < length) {
-          _closeLines(i, i + 1);
-          _firstOpenIndex = i + 1;
-        }
-
-        pushBlock(MD$Heading(
-          level: level,
-          text: text,
-          spans: _parseInlineSpans(text),
-        ));
-        continue;
-      }
-
-      // --- Quote ---
-      if (line.startsWith('>')) {
-        final buffer = StringBuffer()..write(line.substring(1).trim());
-        var j = i + 1;
-        for (; j < length && lineAt(j).startsWith('>'); j++) {
-          buffer
-            ..writeln()
-            ..write(lineAt(j).substring(1).trim());
-        }
-        final text = buffer.toString();
-        final count = j - i;
-
-        // Closure check: next line doesn't start with >
-        if (j < length) {
-          _closeLines(i, j);
-          _firstOpenIndex = j;
-        }
-
-        pushBlock(MD$Quote(
-          indent: 1,
-          text: text,
-          spans: _parseInlineSpans(text),
-        ));
-
-        if (i + count == length) break;
-        i = j - 1;
-        continue;
-      }
-
-      // --- Code block ---
-      if (line.startsWith('```')) {
-        final language = line.length > 3 ? line.substring(3).trim() : '';
-        var j = i + 1;
-
-        // Find closing ``` - same logic as original
-        for (; j < length && !lineAt(j).startsWith('```'); j++) continue;
-
-        // Closure check: found closing ```
-        final foundClosing = j < length;
-
-        if (foundClosing) {
-          // Code block is closed
-          _closeLines(i, j + 1);
-          _firstOpenIndex = j + 1;
-
-          final codeText =
-              _lines.sublist(i + 1, j).map((l) => l.text).join('\n');
-          pushBlock(MD$Code(text: codeText, language: language));
-
-          if (j == length - 1) break;
-          i = j;
-        } else {
-          // Not closed yet - keep all lines open, create temporary block
-          final codeText =
-              _lines.sublist(i + 1, length).map((l) => l.text).join('\n');
-          pushBlock(MD$Code(text: codeText, language: language));
-          break; // Exit loop, wait for more input
-        }
-        continue;
-      }
-
-      // --- List ---
-      if (_listPattern.firstMatch(line) case RegExpMatch match
-          when match.namedGroup('indent')?.isEmpty == true) {
-        final marker = match.namedGroup('marker') ?? '*';
-        final list = <({int intent, String marker, String text})>[
-          (
-            intent: 0,
-            marker: marker,
-            text: match.namedGroup('text')?.trim() ?? '',
-          )
-        ];
-
-        var j = i + 1;
-        for (; j < length; j++) {
-          final listLine = lineAt(j);
-          final listMatch = _listPattern.firstMatch(listLine);
-          final indent = listMatch?.namedGroup('indent')?.length;
-          if (indent == null) break;
-          list.add((
-            intent: indent,
-            marker: listMatch?.namedGroup('marker') ?? '*',
-            text: listMatch?.namedGroup('text')?.trim() ?? '',
-          ));
-        }
-
-        // Convert to tree structure
-        var offset = 0;
-        List<MD$ListItem> traverse({int indent = 0}) {
-          final items = <MD$ListItem>[];
-          for (; offset < list.length; offset++) {
-            final item = list[offset];
-            if (item.intent == indent) {
-              items.add(MD$ListItem(
-                text: item.text,
-                marker: item.marker,
-                spans: _parseInlineSpans(item.text),
-                indent: item.intent,
-              ));
-            } else if (item.intent > indent) {
-              final children = traverse(indent: item.intent);
-              if (items.isNotEmpty) {
-                items.last = items.last.copyWith(
-                    children: List<MD$ListItem>.unmodifiable(children));
-              } else {
-                items.add(MD$ListItem(
-                  marker: item.marker,
-                  text: item.text,
-                  spans: _parseInlineSpans(item.text),
-                  indent: item.intent,
-                  children: children,
-                ));
-              }
-            } else {
-              offset--;
-              break;
-            }
-          }
-          return items.isEmpty ? const <MD$ListItem>[] : items;
-        }
-
-        final count = j - i;
-        final text = _lines.sublist(i, j).map((l) => l.text).join('\n');
-
-        // Closure check: next line is not a list item
-        if (j < length) {
-          _closeLines(i, j);
-          _firstOpenIndex = j;
-        }
-
-        pushBlock(MD$List(text: text, items: traverse()));
-
-        if (i + count == length) break;
-        i = j - 1;
-        continue;
-      }
-
-      // --- Table ---
-      if (line.startsWith('|')) {
-        MD$TableRow textToRow(String text) {
-          final cells = text.split('|');
-          return MD$TableRow(
-            text: text,
-            cells: List<List<MD$Span>>.unmodifiable(cells
-                .sublist(1, cells.length - 1)
-                .map((cell) => cell.trim())
-                .map(_parseInlineSpans)),
-          );
-        }
-
-        final header = textToRow(line);
-        final separator = length > i + 1
-            ? RegExp(r'^\|[ -:]+[ -|:]*\|$').hasMatch(lineAt(i + 1))
-            : false;
-        final rows = <MD$TableRow>[];
-        var j = i + 2;
-        for (; j < length && lineAt(j).startsWith('|'); j++) {
-          rows.add(textToRow(lineAt(j)));
-        }
-
-        final columns = header.cells.length;
-        if (columns > 0 &&
-            separator &&
-            rows.every((row) => row.cells.length == columns)) {
-          final text = _lines.sublist(i, j).map((l) => l.text).join('\n');
-
-          // Closure check: next line doesn't start with |
-          if (j < length) {
-            _closeLines(i, j);
-            _firstOpenIndex = j;
-          }
-
-          pushBlock(MD$Table(
-            text: text,
-            header: header,
-            rows: List<MD$TableRow>.unmodifiable(rows),
-          ));
-        } else {
-          // Malformed table, treat as paragraph
-          if (paragraph.isNotEmpty) paragraph.writeln();
-          paragraph.write(line);
-          continue;
-        }
-
-        final count = j - i;
-        if (i + count == length) break;
-        i = j - 1;
-        continue;
-      }
-
-      // --- Paragraph (default) ---
-      if (paragraph.isNotEmpty) paragraph.writeln();
-      paragraph.write(line);
-
-      // Check if paragraph can be closed (next line starts a new block)
-      if (i + 1 < length) {
-        final nextLine = lineAt(i + 1);
-        if (nextLine.isEmpty ||
-            _emptyPattern.hasMatch(nextLine) ||
-            nextLine.startsWith('#') ||
-            nextLine.startsWith('>') ||
-            nextLine.startsWith('```') ||
-            nextLine.startsWith('---') ||
-            nextLine.startsWith('|') ||
-            (_listPattern.firstMatch(nextLine)?.namedGroup('indent')?.isEmpty ==
-                true)) {
-          _closeLines(i, i + 1);
-          _firstOpenIndex = i + 1;
-          maybeCommitParagraph();
         }
       }
     }
-
-    maybeCommitParagraph();
   }
 
   /// Truncates blocks that need to be re-parsed.
