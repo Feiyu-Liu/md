@@ -9,6 +9,35 @@ import 'nodes.dart';
 /// into a list of [MD$Block] objects.
 const Converter<String, Markdown> markdownDecoder = MarkdownDecoder();
 
+// ============================================================================
+// Line State for Streaming
+// ============================================================================
+
+/// State of a parsed line in streaming context.
+enum LineState {
+  /// Line is not yet confirmed closed, may receive more content
+  /// or belongs to an unclosed block.
+  open,
+
+  /// Line belongs to a closed block and will not change.
+  closed,
+}
+
+/// A line with its parsing state for streaming context.
+class ParsedLine {
+  /// Creates a new parsed line.
+  ParsedLine(this.text, {this.state = LineState.open});
+
+  /// The text content of the line.
+  String text;
+
+  /// The parsing state of this line.
+  LineState state;
+
+  @override
+  String toString() => 'ParsedLine($text, $state)';
+}
+
 /// {@template markdown_decoder}
 /// A [Converter] that decodes Markdown formatted strings
 /// into list of [MD$Block] objects.
@@ -588,4 +617,477 @@ List<MD$Span> _parseInlineSpans(String text) {
   // This function would parse inline spans like bold, italic, links, etc.
   // For now, it returns an empty list as a placeholder.
   return spans;
+}
+
+// ============================================================================
+// Streaming Markdown Decoder
+// ============================================================================
+
+/// {@template streaming_markdown_decoder}
+/// A streaming Markdown decoder optimized for LLM output scenarios.
+///
+/// Unlike [MarkdownDecoder] which parses the entire input on each call,
+/// this decoder maintains state across multiple [append] calls and only
+/// re-parses lines that are still open (not yet closed).
+///
+/// The core parsing logic is the same as [MarkdownDecoder], but with
+/// line state tracking added at block closure points.
+///
+/// Usage:
+/// ```dart
+/// final decoder = StreamingMarkdownDecoder();
+/// decoder.append('# Hello');
+/// decoder.append(' World\n\nSome text');
+/// final markdown = decoder.build();
+/// ```
+/// {@endtemplate}
+class StreamingMarkdownDecoder {
+  /// Creates a new streaming Markdown decoder.
+  /// {@macro streaming_markdown_decoder}
+  StreamingMarkdownDecoder();
+
+  /// Parsed lines with their states.
+  /// The last line is always the "pending line" that may receive more content.
+  final List<ParsedLine> _lines = [];
+
+  /// Accumulated blocks from parsing.
+  final List<MD$Block> _blocks = [];
+
+  /// Index of the first open line, used to skip closed lines during parsing.
+  int _firstOpenIndex = 0;
+
+  /// Regular expression pattern to match empty lines.
+  static final RegExp _emptyPattern = RegExp(r'^(?:[ \t]*)$');
+
+  /// Leading `#` define atx-style headers (1-6 levels).
+  static final RegExp _headerPattern = RegExp(r'^(#{1,6})');
+
+  /// Pattern to match list items (ordered and unordered).
+  static final RegExp _listPattern = RegExp(
+      r'^(?<indent>[ \t]{0,8})(?<marker>(\d{1,9})[\.)]|[*+-])'
+      r'(?<text>[ \t]+(.*))?$');
+
+  /// Returns the current list of parsed blocks.
+  List<MD$Block> get blocks => List.unmodifiable(_blocks);
+
+  /// Returns the current number of lines.
+  int get lineCount => _lines.length;
+
+  /// Returns the index of the first open line.
+  int get firstOpenIndex => _firstOpenIndex;
+
+  /// Appends a chunk of text and triggers incremental parsing.
+  ///
+  /// The chunk may contain partial lines (no newline at the end),
+  /// which will be buffered until a newline is received.
+  Markdown append(String chunk) {
+    if (chunk.isEmpty) {
+      return Markdown(
+        markdown: _lines.map((l) => l.text).join('\n'),
+        blocks: List.unmodifiable(_blocks),
+      );
+    }
+
+    _processChunk(chunk);
+    _parse();
+
+    return Markdown(
+      markdown: _lines.map((l) => l.text).join('\n'),
+      blocks: List.unmodifiable(_blocks),
+    );
+  }
+
+  /// Processes a chunk of text, splitting into lines.
+  void _processChunk(String chunk) {
+    // Ensure we have a pending line to append to
+    if (_lines.isEmpty || _lines.last.state == LineState.closed) {
+      _lines.add(ParsedLine('', state: LineState.open));
+    }
+
+    // Append chunk to the pending line (last line)
+    final pendingIndex = _lines.length - 1;
+    final pending = _lines[pendingIndex];
+    final combined = pending.text + chunk;
+
+    // Use LineSplitter to split the combined text
+    final split = LineSplitter.split(combined).toList(growable: false);
+
+    if (split.length > 1) {
+      // Multiple lines: we have newline characters
+      _lines[pendingIndex] = ParsedLine(split[0], state: LineState.open);
+
+      for (var i = 1; i < split.length; i++) {
+        _lines.add(ParsedLine(split[i], state: LineState.open));
+      }
+
+      // If combined ends with newline, add empty pending line
+      if (combined.endsWith('\n') || combined.endsWith('\r')) {
+        _lines.add(ParsedLine('', state: LineState.open));
+      }
+    } else {
+      _lines[pendingIndex] = ParsedLine(combined, state: LineState.open);
+    }
+  }
+
+  /// Marks lines from [start] to [end] (exclusive) as closed.
+  void _closeLines(int start, int end) {
+    for (var k = start; k < end && k < _lines.length; k++) {
+      _lines[k].state = LineState.closed;
+    }
+  }
+
+  /// Main parsing method - reuses the same logic as MarkdownDecoder.convert()
+  /// but with line state tracking at closure points.
+  void _parse() {
+    // Remove blocks from _firstOpenIndex onwards (need to re-parse)
+    _truncateBlocks();
+
+    final length = _lines.length;
+    final paragraph = StringBuffer();
+
+    // Helper: get line text at index
+    String lineAt(int idx) => _lines[idx].text;
+
+    void maybeCommitParagraph() {
+      if (paragraph.isEmpty) return;
+      final text = paragraph.toString();
+      paragraph.clear();
+      _blocks.add(MD$Paragraph(
+        text: text,
+        spans: _parseInlineSpans(text),
+      ));
+    }
+
+    void pushBlock(MD$Block block) {
+      maybeCommitParagraph();
+      _blocks.add(block);
+    }
+
+    // Main parsing loop - same structure as MarkdownDecoder.convert()
+    for (var i = _firstOpenIndex; i < length; i++) {
+      final pline = _lines[i];
+
+      // Skip closed lines and update _firstOpenIndex
+      if (pline.state == LineState.closed) {
+        _firstOpenIndex = i + 1;
+        continue;
+      }
+
+      final line = pline.text;
+
+      // --- Empty lines / Spacer ---
+      if (line.isEmpty || _emptyPattern.hasMatch(line)) {
+        var j = i + 1;
+        for (; j < length && _emptyPattern.hasMatch(lineAt(j)); j++) continue;
+        final count = j - i;
+
+        // Closure check: has content after spacer
+        if (j < length) {
+          _closeLines(i, j);
+          _firstOpenIndex = j;
+        }
+
+        pushBlock(MD$Spacer(count: count));
+        if (i + count == length) break;
+        i = j - 1;
+        continue;
+      }
+
+      // --- Horizontal rule ---
+      if (line.startsWith('---')) {
+        // Single line, close if not last
+        if (i + 1 < length) {
+          _closeLines(i, i + 1);
+          _firstOpenIndex = i + 1;
+        }
+        pushBlock(const MD$Divider());
+        continue;
+      }
+
+      // --- Heading ---
+      if (line.startsWith('#')) {
+        final level =
+            _headerPattern.firstMatch(line)?.group(0)?.length.clamp(1, 6) ?? 1;
+        final text = line.substring(level).trim();
+
+        // Single line, close if not last
+        if (i + 1 < length) {
+          _closeLines(i, i + 1);
+          _firstOpenIndex = i + 1;
+        }
+
+        pushBlock(MD$Heading(
+          level: level,
+          text: text,
+          spans: _parseInlineSpans(text),
+        ));
+        continue;
+      }
+
+      // --- Quote ---
+      if (line.startsWith('>')) {
+        final buffer = StringBuffer()..write(line.substring(1).trim());
+        var j = i + 1;
+        for (; j < length && lineAt(j).startsWith('>'); j++) {
+          buffer
+            ..writeln()
+            ..write(lineAt(j).substring(1).trim());
+        }
+        final text = buffer.toString();
+        final count = j - i;
+
+        // Closure check: next line doesn't start with >
+        if (j < length) {
+          _closeLines(i, j);
+          _firstOpenIndex = j;
+        }
+
+        pushBlock(MD$Quote(
+          indent: 1,
+          text: text,
+          spans: _parseInlineSpans(text),
+        ));
+
+        if (i + count == length) break;
+        i = j - 1;
+        continue;
+      }
+
+      // --- Code block ---
+      if (line.startsWith('```')) {
+        final language = line.length > 3 ? line.substring(3).trim() : '';
+        var j = i + 1;
+
+        // Find closing ``` - same logic as original
+        for (; j < length && !lineAt(j).startsWith('```'); j++) continue;
+
+        // Closure check: found closing ```
+        final foundClosing = j < length;
+
+        if (foundClosing) {
+          // Code block is closed
+          _closeLines(i, j + 1);
+          _firstOpenIndex = j + 1;
+
+          final codeText =
+              _lines.sublist(i + 1, j).map((l) => l.text).join('\n');
+          pushBlock(MD$Code(text: codeText, language: language));
+
+          if (j == length - 1) break;
+          i = j;
+        } else {
+          // Not closed yet - keep all lines open, create temporary block
+          final codeText =
+              _lines.sublist(i + 1, length).map((l) => l.text).join('\n');
+          pushBlock(MD$Code(text: codeText, language: language));
+          break; // Exit loop, wait for more input
+        }
+        continue;
+      }
+
+      // --- List ---
+      if (_listPattern.firstMatch(line) case RegExpMatch match
+          when match.namedGroup('indent')?.isEmpty == true) {
+        final marker = match.namedGroup('marker') ?? '*';
+        final list = <({int intent, String marker, String text})>[
+          (
+            intent: 0,
+            marker: marker,
+            text: match.namedGroup('text')?.trim() ?? '',
+          )
+        ];
+
+        var j = i + 1;
+        for (; j < length; j++) {
+          final listLine = lineAt(j);
+          final listMatch = _listPattern.firstMatch(listLine);
+          final indent = listMatch?.namedGroup('indent')?.length;
+          if (indent == null) break;
+          list.add((
+            intent: indent,
+            marker: listMatch?.namedGroup('marker') ?? '*',
+            text: listMatch?.namedGroup('text')?.trim() ?? '',
+          ));
+        }
+
+        // Convert to tree structure
+        var offset = 0;
+        List<MD$ListItem> traverse({int indent = 0}) {
+          final items = <MD$ListItem>[];
+          for (; offset < list.length; offset++) {
+            final item = list[offset];
+            if (item.intent == indent) {
+              items.add(MD$ListItem(
+                text: item.text,
+                marker: item.marker,
+                spans: _parseInlineSpans(item.text),
+                indent: item.intent,
+              ));
+            } else if (item.intent > indent) {
+              final children = traverse(indent: item.intent);
+              if (items.isNotEmpty) {
+                items.last = items.last.copyWith(
+                    children: List<MD$ListItem>.unmodifiable(children));
+              } else {
+                items.add(MD$ListItem(
+                  marker: item.marker,
+                  text: item.text,
+                  spans: _parseInlineSpans(item.text),
+                  indent: item.intent,
+                  children: children,
+                ));
+              }
+            } else {
+              offset--;
+              break;
+            }
+          }
+          return items.isEmpty ? const <MD$ListItem>[] : items;
+        }
+
+        final count = j - i;
+        final text = _lines.sublist(i, j).map((l) => l.text).join('\n');
+
+        // Closure check: next line is not a list item
+        if (j < length) {
+          _closeLines(i, j);
+          _firstOpenIndex = j;
+        }
+
+        pushBlock(MD$List(text: text, items: traverse()));
+
+        if (i + count == length) break;
+        i = j - 1;
+        continue;
+      }
+
+      // --- Table ---
+      if (line.startsWith('|')) {
+        MD$TableRow textToRow(String text) {
+          final cells = text.split('|');
+          return MD$TableRow(
+            text: text,
+            cells: List<List<MD$Span>>.unmodifiable(cells
+                .sublist(1, cells.length - 1)
+                .map((cell) => cell.trim())
+                .map(_parseInlineSpans)),
+          );
+        }
+
+        final header = textToRow(line);
+        final separator = length > i + 1
+            ? RegExp(r'^\|[ -:]+[ -|:]*\|$').hasMatch(lineAt(i + 1))
+            : false;
+        final rows = <MD$TableRow>[];
+        var j = i + 2;
+        for (; j < length && lineAt(j).startsWith('|'); j++) {
+          rows.add(textToRow(lineAt(j)));
+        }
+
+        final columns = header.cells.length;
+        if (columns > 0 &&
+            separator &&
+            rows.every((row) => row.cells.length == columns)) {
+          final text = _lines.sublist(i, j).map((l) => l.text).join('\n');
+
+          // Closure check: next line doesn't start with |
+          if (j < length) {
+            _closeLines(i, j);
+            _firstOpenIndex = j;
+          }
+
+          pushBlock(MD$Table(
+            text: text,
+            header: header,
+            rows: List<MD$TableRow>.unmodifiable(rows),
+          ));
+        } else {
+          // Malformed table, treat as paragraph
+          if (paragraph.isNotEmpty) paragraph.writeln();
+          paragraph.write(line);
+          continue;
+        }
+
+        final count = j - i;
+        if (i + count == length) break;
+        i = j - 1;
+        continue;
+      }
+
+      // --- Paragraph (default) ---
+      if (paragraph.isNotEmpty) paragraph.writeln();
+      paragraph.write(line);
+
+      // Check if paragraph can be closed (next line starts a new block)
+      if (i + 1 < length) {
+        final nextLine = lineAt(i + 1);
+        if (nextLine.isEmpty ||
+            _emptyPattern.hasMatch(nextLine) ||
+            nextLine.startsWith('#') ||
+            nextLine.startsWith('>') ||
+            nextLine.startsWith('```') ||
+            nextLine.startsWith('---') ||
+            nextLine.startsWith('|') ||
+            (_listPattern.firstMatch(nextLine)?.namedGroup('indent')?.isEmpty ==
+                true)) {
+          _closeLines(i, i + 1);
+          _firstOpenIndex = i + 1;
+          maybeCommitParagraph();
+        }
+      }
+    }
+
+    maybeCommitParagraph();
+  }
+
+  /// Truncates blocks that need to be re-parsed.
+  void _truncateBlocks() {
+    // Count closed blocks by estimating line consumption
+    var count = 0;
+    var lineIdx = 0;
+
+    for (final block in _blocks) {
+      if (lineIdx >= _firstOpenIndex) break;
+      final linesInBlock = _estimateBlockLines(block);
+      if (lineIdx + linesInBlock <= _firstOpenIndex) {
+        count++;
+        lineIdx += linesInBlock;
+      } else {
+        break;
+      }
+    }
+
+    if (count < _blocks.length) {
+      _blocks.removeRange(count, _blocks.length);
+    }
+  }
+
+  /// Estimates how many lines a block consumes.
+  int _estimateBlockLines(MD$Block block) {
+    return block.map(
+      paragraph: (p) => p.text.split('\n').length,
+      heading: (_) => 1,
+      quote: (q) => q.text.split('\n').length,
+      code: (c) => c.text.split('\n').length + 2,
+      list: (l) => l.text.split('\n').length,
+      divider: (_) => 1,
+      table: (t) => t.text.split('\n').length,
+      spacer: (s) => s.count,
+    );
+  }
+
+  /// Resets the decoder to its initial state.
+  void reset() {
+    _lines.clear();
+    _blocks.clear();
+    _firstOpenIndex = 0;
+  }
+
+  /// Builds the final Markdown result.
+  Markdown build() {
+    return Markdown(
+      markdown: _lines.map((l) => l.text).join('\n'),
+      blocks: List.unmodifiable(_blocks),
+    );
+  }
 }

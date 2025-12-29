@@ -140,6 +140,16 @@ class _HomeScreenState extends State<HomeScreen> {
             centerTitle: true,
             title: const Text('Markdown'),
             actions: <Widget>[
+              // Navigate to streaming demo
+              IconButton(
+                icon: const Icon(Icons.stream),
+                tooltip: 'Streaming Demo',
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) => const StreamingDemoScreen(),
+                  ),
+                ),
+              ),
               // theme switch widget
               Switch.adaptive(
                   value: ThemeModel.of(context).value == ThemeMode.dark,
@@ -368,3 +378,235 @@ This example is using `package:flutter_md/flutter_md.dart`.
 > "Quotes" and 'single quotes' with 👉 <, >, &, ©, ®, ™, €, £, ¥, •, …, ±, §, ¶, †, ‡, ‰, µ, °
 
 ''';
+
+// ============================================================================
+// Streaming Demo Screen
+// ============================================================================
+
+/// {@template streaming_demo_screen}
+/// Demonstrates StreamingMarkdownDecoder with simulated LLM output.
+/// {@endtemplate}
+class StreamingDemoScreen extends StatefulWidget {
+  /// {@macro streaming_demo_screen}
+  const StreamingDemoScreen({super.key});
+
+  @override
+  State<StreamingDemoScreen> createState() => _StreamingDemoScreenState();
+}
+
+class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
+  final StreamingMarkdownDecoder _decoder = StreamingMarkdownDecoder();
+  final ValueNotifier<Markdown> _outputController =
+      ValueNotifier<Markdown>(const Markdown.empty());
+
+  Timer? _streamTimer;
+  int _charIndex = 0;
+  bool _isStreaming = false;
+
+  // Sample markdown content to stream
+  static const String _streamingContent = '''
+# Streaming Markdown Demo
+
+This demonstrates the **StreamingMarkdownDecoder** for LLM applications.
+
+## How it works
+
+The decoder maintains state across multiple `append()` calls:
+
+1. **Line state tracking** - Each line has an `open` or `closed` state
+2. **Incremental parsing** - Only re-parses lines that are still open
+3. **Pending line buffer** - Handles partial lines without newlines
+
+## Code Example
+
+```dart
+final decoder = StreamingMarkdownDecoder();
+
+// Simulate streaming chunks
+decoder.append('# Hel');
+decoder.append('lo World\\n');
+decoder.append('\\nSome **bold** text.\\n');
+
+final result = decoder.build();
+print(result.blocks); // [Heading, Spacer, Paragraph]
+```
+
+## Performance Benefits
+
+| Scenario | Traditional | Streaming |
+|----------|-------------|-----------|
+| 100 lines, +1 token | Parse 100 lines | Parse ~1-3 lines |
+| Closed code block | Re-parse all | Skip entirely |
+
+> The streaming decoder is optimized for LLM output scenarios where text arrives in small chunks over time.
+
+---
+
+**Try it yourself!** Click the play button to start streaming.
+''';
+
+  @override
+  void dispose() {
+    _streamTimer?.cancel();
+    _outputController.dispose();
+    super.dispose();
+  }
+
+  void _startStreaming() {
+    if (_isStreaming) return;
+
+    // Reset state
+    _decoder.reset();
+    _charIndex = 0;
+    _outputController.value = const Markdown.empty();
+
+    setState(() => _isStreaming = true);
+
+    // Stream characters with varying chunk sizes
+    _streamTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
+      if (_charIndex >= _streamingContent.length) {
+        timer.cancel();
+        setState(() => _isStreaming = false);
+        return;
+      }
+
+      // Simulate varying chunk sizes (1-5 characters)
+      final chunkSize = (_charIndex % 5) + 1;
+      final endIndex =
+          (_charIndex + chunkSize).clamp(0, _streamingContent.length);
+      final chunk = _streamingContent.substring(_charIndex, endIndex);
+
+      _decoder.append(chunk);
+      _outputController.value = _decoder.build();
+
+      _charIndex = endIndex;
+    });
+  }
+
+  void _stopStreaming() {
+    _streamTimer?.cancel();
+    setState(() => _isStreaming = false);
+  }
+
+  void _resetStreaming() {
+    _stopStreaming();
+    _decoder.reset();
+    _charIndex = 0;
+    _outputController.value = const Markdown.empty();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+          centerTitle: true,
+          title: const Text('Streaming Demo'),
+          actions: <Widget>[
+            // Play/Pause button
+            IconButton(
+              icon: Icon(_isStreaming ? Icons.pause : Icons.play_arrow),
+              tooltip: _isStreaming ? 'Pause' : 'Start Streaming',
+              onPressed: _isStreaming ? _stopStreaming : _startStreaming,
+            ),
+            // Reset button
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Reset',
+              onPressed: _resetStreaming,
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: Column(
+            children: [
+              // Progress indicator
+              ValueListenableBuilder<Markdown>(
+                valueListenable: _outputController,
+                builder: (context, _, __) {
+                  final progress = _streamingContent.isEmpty
+                      ? 0.0
+                      : _charIndex / _streamingContent.length;
+                  return LinearProgressIndicator(
+                    value: progress,
+                    backgroundColor: Colors.grey.shade300,
+                  );
+                },
+              ),
+              // Stats bar
+              ValueListenableBuilder<Markdown>(
+                valueListenable: _outputController,
+                builder: (context, markdown, _) => Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _StatChip(
+                        label: 'Chars',
+                        value: '$_charIndex/${_streamingContent.length}',
+                      ),
+                      _StatChip(
+                        label: 'Lines',
+                        value: '${_decoder.lineCount}',
+                      ),
+                      _StatChip(
+                        label: 'Blocks',
+                        value: '${markdown.blocks.length}',
+                      ),
+                      _StatChip(
+                        label: 'First Open',
+                        value: '${_decoder.firstOpenIndex}',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Markdown output
+              Expanded(
+                child: Card(
+                  margin: const EdgeInsets.all(8),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: ValueListenableBuilder<Markdown>(
+                      valueListenable: _outputController,
+                      builder: (context, markdown, _) => MarkdownWidget(
+                        markdown: markdown,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// A small chip widget for displaying stats.
+class _StatChip extends StatelessWidget {
+  const _StatChip({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      );
+}
