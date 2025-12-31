@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import 'animation/animation_config.dart';
 import 'markdown.dart' show Markdown;
 import 'render.dart' show MarkdownRenderObject;
 import 'theme.dart';
@@ -12,6 +13,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
   const MarkdownWidget({
     required this.markdown,
     this.theme,
+    this.animationConfig = MarkdownAnimationConfig.disabled,
     super.key, // ignore: unused_element
   });
 
@@ -20,6 +22,10 @@ class MarkdownWidget extends LeafRenderObjectWidget {
 
   /// Current theme for the markdown widget.
   final MarkdownThemeData? theme;
+
+  /// Animation configuration for block fade-in effects.
+  /// 块淡入效果的动画配置
+  final MarkdownAnimationConfig animationConfig;
 
   @override
   RenderObject createRenderObject(BuildContext context) {
@@ -34,6 +40,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
     return MarkdownRenderObject(
       markdown: markdown,
       theme: theme,
+      animationConfig: animationConfig,
     );
   }
 
@@ -53,6 +60,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
     renderObject.update(
       markdown: markdown,
       theme: theme,
+      animationConfig: animationConfig,
     );
   }
 }

@@ -8,26 +8,50 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:meta/meta.dart' as meta show internal;
 
+import 'animation/animated_block_painter.dart';
+import 'animation/animation_config.dart';
 import 'markdown.dart';
 import 'nodes.dart';
 import 'theme.dart';
 
 @meta.internal
-class MarkdownRenderObject extends RenderBox {
+class MarkdownRenderObject extends RenderBox implements TickerProvider {
   MarkdownRenderObject({
     required Markdown markdown,
     required MarkdownThemeData theme,
-  }) : _painter = MarkdownPainter(
+    MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
+  })  : _animationConfig = animationConfig,
+        _painter = MarkdownPainter(
           markdown: markdown,
           theme: theme,
+          animationConfig: animationConfig,
         );
 
   /// Painter for rendering markdown content.
+  /// 用于渲染 Markdown 内容的绘制器
   final MarkdownPainter _painter;
 
+  /// Animation configuration.
+  /// 动画配置
+  MarkdownAnimationConfig _animationConfig;
+
+  /// Set of active tickers for animation.
+  /// 用于动画的活动 Ticker 集合
+  Set<Ticker>? _tickers;
+
+  @override
+  Ticker createTicker(TickerCallback onTick) {
+    _tickers ??= <Ticker>{};
+    final ticker = Ticker(onTick, debugLabel: 'created by $this');
+    _tickers!.add(ticker);
+    return ticker;
+  }
+
   /// Current size of the render box.
+  /// 渲染盒的当前尺寸
   @override
   Size get size => _size;
   Size _size = Size.zero;
@@ -63,6 +87,7 @@ class MarkdownRenderObject extends RenderBox {
   @override
   void performLayout() {
     // Set the size of the render box to match the painter's size.
+    // 设置渲染盒的尺寸以匹配绘制器的尺寸
     size =
         constraints.constrain(_painter.layout(maxWidth: constraints.maxWidth));
   }
@@ -99,10 +124,13 @@ class MarkdownRenderObject extends RenderBox {
   }
 
   /// Handles system font changes by marking the render object as needing layout
+  /// 处理系统字体变化，将渲染对象标记为需要重新布局
   void _handleSystemFontsChange() {
     // Invalidate cached layouts in painter and all block painters
+    // 使绘制器和所有块绘制器中的缓存布局失效
     _painter.invalidateLayout();
     // Request new layout and paint
+    // 请求新的布局和绘制
     markNeedsLayout();
   }
 
@@ -111,21 +139,39 @@ class MarkdownRenderObject extends RenderBox {
   void attach(PipelineOwner owner) {
     super.attach(owner);
     PaintingBinding.instance.systemFonts.addListener(_handleSystemFontsChange);
+
+    // Initialize the painter with TickerProvider if animation is enabled
+    // 如果启用了动画，则使用 TickerProvider 初始化绘制器
+    if (_animationConfig.enabled) {
+      _painter.initializeAnimations(this);
+    }
   }
 
   /// Updates the render object with a new values.
   /// This method should be called whenever the markdown or theme changes.
+  /// 使用新值更新渲染对象
+  /// 每当 Markdown 或主题发生变化时都应调用此方法
   @meta.internal
   void update({
     required Markdown markdown,
     required MarkdownThemeData theme,
+    MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
   }) {
+    _animationConfig = animationConfig;
     if (_painter.update(
       markdown: markdown,
       theme: theme,
+      animationConfig: animationConfig,
     )) {
       // Mark the render object as needing layout.
+      // 将渲染对象标记为需要重新布局
       markNeedsLayout();
+    }
+
+    // If there are active animations, request repaint
+    // 如果有活动的动画，请求重绘
+    if (_painter.hasActiveAnimations) {
+      markNeedsPaint();
     }
   }
 
@@ -140,8 +186,17 @@ class MarkdownRenderObject extends RenderBox {
   @override
   @protected
   void dispose() {
-    super.dispose();
+    // Dispose all tickers
+    // 释放所有 tickers
+    if (_tickers != null) {
+      for (final ticker in _tickers!) {
+        ticker.dispose();
+      }
+      _tickers = null;
+    }
+
     _painter.dispose();
+    super.dispose();
   }
 
   @override
@@ -149,6 +204,7 @@ class MarkdownRenderObject extends RenderBox {
   void paint(PaintingContext context, Offset offset) {
     if (_painter.isEmpty)
       return; // If the markdown is empty, do not paint anything.
+    // 如果 Markdown 为空，则不绘制任何内容
 
     // ignore: unused_local_variable
     final canvas = context.canvas
@@ -159,38 +215,81 @@ class MarkdownRenderObject extends RenderBox {
     _painter.paint(canvas, size);
 
     canvas.restore();
+
+    // If there are active animations, schedule another paint
+    // 如果有活动的动画，安排另一次绘制
+    if (_painter.hasActiveAnimations) {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (attached) {
+          markNeedsPaint();
+        }
+      });
+    }
   }
 }
 
 /// A painter for rendering markdown content via blocks and spans.
+/// 通过块和跨度渲染 Markdown 内容的绘制器
 @meta.internal
 class MarkdownPainter {
   /// Creates a [MarkdownPainter] instance.
+  /// 创建一个 [MarkdownPainter] 实例
   MarkdownPainter({
     required Markdown markdown,
     required MarkdownThemeData theme,
+    this.animationConfig = MarkdownAnimationConfig.disabled,
   })  : _markdown = markdown,
         _theme = theme,
-        _isEmpty = markdown.isEmpty,
+        _isEmpty = markdown.closedBlocks.isEmpty,
         _size = Size.zero {
     _rebuild();
   }
 
+  /// Animation configuration.
+  /// 动画配置
+  MarkdownAnimationConfig animationConfig;
+
+  /// TickerProvider for creating AnimationControllers.
+  /// 用于创建 AnimationController 的 TickerProvider
+  TickerProvider? _vsync;
+
+  /// AnimationControllers for each closed block.
+  /// 每个已闭合块的 AnimationController
+  List<AnimationController> _controllers = [];
+
+  /// Opacity animations for each closed block.
+  /// 每个已闭合块的透明度动画
+  List<Animation<double>> _opacityAnimations = [];
+
+  /// Number of closed blocks from the last rebuild.
+  /// 上次重建时的已闭合块数量
+  int _lastClosedCount = 0;
+
+  /// Whether there are active animations.
+  /// 是否有活动的动画
+  bool get hasActiveAnimations =>
+      animationConfig.enabled && _controllers.any((c) => c.isAnimating);
+
   /// Is the markdown entity empty?
+  /// Markdown 实体是否为空？
   bool get isEmpty => _isEmpty;
   bool _isEmpty;
 
   /// Current markdown entity to render.
+  /// 要渲染的当前 Markdown 实体
   Markdown _markdown;
 
   /// Current theme for the markdown widget.
+  /// Markdown 组件的当前主题
   MarkdownThemeData _theme;
 
   /// The size of the painted markdown content.
+  /// 绘制的 Markdown 内容的尺寸
   Size get size => _size;
   Size _size;
 
   /// Indicates if the layout needs to be recalculated.
+  /// 指示是否需要重新计算布局
   bool _needsLayout = true;
 
   Float32List _blockOffsets = Float32List(0);
@@ -238,50 +337,203 @@ class MarkdownPainter {
         ),
       );
 
+  /// Initialize animations with a TickerProvider.
+  /// 使用 TickerProvider 初始化动画
+  void initializeAnimations(TickerProvider vsync) {
+    _vsync = vsync;
+    if (animationConfig.enabled) {
+      _rebuildAnimations();
+    }
+  }
+
   /// Rebuilds the block painters from the markdown blocks.
   /// This method is called whenever the markdown or theme changes.
+  /// 从 Markdown 块重建块绘制器
+  /// 每当 Markdown 或主题发生变化时都会调用此方法
   void _rebuild() {
     _needsLayout = true; // Mark that layout needs to be recalculated.
+    // 标记需要重新计算布局
     _size = Size.zero; // Reset size before rebuilding.
+    // 在重建之前重置尺寸
+
+    // Only render closed blocks when animation is enabled
+    // 启用动画时只渲染已闭合的块
+    final blocksToRender =
+        animationConfig.enabled ? _markdown.closedBlocks : _markdown.blocks;
+
+    _isEmpty = blocksToRender.isEmpty;
+
     final filter = _theme.blockFilter;
     final filtered =
-        filter != null ? _markdown.blocks.where(filter) : _markdown.blocks;
+        filter != null ? blocksToRender.where(filter) : blocksToRender;
     final builder = _theme.builder ?? _defaultBlockBuilder;
-    _blockPainters = filtered
+
+    // Create raw painters
+    final rawPainters = filtered
         .map<BlockPainter>(
           (block) =>
               builder(block, _theme) ?? _defaultBlockBuilder(block, _theme),
         )
         .toList(growable: false);
+
+    // Wrap with animation if enabled and vsync is available
+    if (animationConfig.enabled && _vsync != null) {
+      _rebuildWithAnimations(rawPainters);
+    } else {
+      // Dispose old controllers if any
+      for (final controller in _controllers) {
+        controller.dispose();
+      }
+      _controllers = [];
+      _opacityAnimations = [];
+      _blockPainters = rawPainters;
+    }
+
     _blockOffsets = Float32List(_blockPainters.length);
+  }
+
+  /// Rebuild animations for the painters.
+  /// 为绘制器重建动画
+  void _rebuildAnimations() {
+    if (_vsync == null || !animationConfig.enabled) return;
+
+    final blocksToRender = _markdown.closedBlocks;
+    _isEmpty = blocksToRender.isEmpty;
+
+    final filter = _theme.blockFilter;
+    final filtered =
+        filter != null ? blocksToRender.where(filter) : blocksToRender;
+    final builder = _theme.builder ?? _defaultBlockBuilder;
+
+    final rawPainters = filtered
+        .map<BlockPainter>(
+          (block) =>
+              builder(block, _theme) ?? _defaultBlockBuilder(block, _theme),
+        )
+        .toList(growable: false);
+
+    _rebuildWithAnimations(rawPainters);
+    _blockOffsets = Float32List(_blockPainters.length);
+    _needsLayout = true;
+  }
+
+  /// Rebuild painters with animation wrappers.
+  /// 使用动画包装器重建绘制器
+  void _rebuildWithAnimations(List<BlockPainter> rawPainters) {
+    final oldCount = _controllers.length;
+    final newCount = rawPainters.length;
+
+    // Keep old controllers that are still valid
+    final oldControllers = List<AnimationController>.from(_controllers);
+    final oldAnimations = List<Animation<double>>.from(_opacityAnimations);
+
+    // Create new controllers list
+    _controllers = List.generate(newCount, (i) {
+      if (i < oldCount) {
+        // Reuse old controller
+        return oldControllers[i];
+      } else {
+        // Create new controller for newly closed block
+        final controller = AnimationController(
+          duration: animationConfig.fadeInDuration,
+          vsync: _vsync!,
+        );
+        return controller;
+      }
+    });
+
+    // Create new animations list
+    _opacityAnimations = List.generate(newCount, (i) {
+      if (i < oldCount) {
+        // Reuse old animation
+        return oldAnimations[i];
+      } else {
+        // Create new animation
+        return Tween<double>(begin: 0.0, end: 1.0).animate(
+          CurvedAnimation(
+            parent: _controllers[i],
+            curve: animationConfig.curve,
+          ),
+        );
+      }
+    });
+
+    // Wrap painters with animation
+    _blockPainters = List.generate(newCount, (i) {
+      return AnimatedBlockPainter(
+        inner: rawPainters[i],
+        opacityAnimation: _opacityAnimations[i],
+      );
+    });
+
+    // Start animations for newly closed blocks
+    for (var i = oldCount; i < newCount; i++) {
+      _controllers[i].forward();
+    }
+
+    // Dispose excess old controllers
+    for (var i = newCount; i < oldCount; i++) {
+      oldControllers[i].dispose();
+    }
+
+    _lastClosedCount = newCount;
   }
 
   /// Update the painter with new values.
   /// If the values are the same,
   /// no update is required and the method returns false.
+  /// 使用新值更新绘制器
+  /// 如果值相同，则不需要更新，方法返回 false
   bool update({
     required Markdown markdown,
     required MarkdownThemeData theme,
+    MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
   }) {
-    if (identical(_markdown, markdown) && identical(_theme, theme))
+    final configChanged = this.animationConfig != animationConfig;
+    this.animationConfig = animationConfig;
+
+    // Check if closed block count changed (for animation)
+    final oldClosedCount = _lastClosedCount;
+    final newClosedCount = markdown.closedBlockCount ?? markdown.blocks.length;
+    final closedCountChanged = newClosedCount != oldClosedCount;
+
+    if (identical(_markdown, markdown) &&
+        identical(_theme, theme) &&
+        !configChanged &&
+        !closedCountChanged) {
       return false;
+    }
+
     _lastSize = null;
     _lastPicture = null;
     _markdown = markdown;
     _theme = theme;
-    _isEmpty = markdown.isEmpty;
-    _rebuild();
+    _isEmpty = animationConfig.enabled
+        ? markdown.closedBlocks.isEmpty
+        : markdown.isEmpty;
+
+    // If animation is enabled and vsync is available, rebuild with animations
+    if (animationConfig.enabled && _vsync != null) {
+      _rebuildAnimations();
+    } else {
+      _rebuild();
+    }
+
     return true; // Indicate that the painter was updated.
+    // 指示绘制器已更新
   }
 
   /// Invalidate cached layouts when system fonts change.
   /// This forces TextPainters to recreate their layouts with new fonts.
+  /// 当系统字体更改时使缓存的布局失效
+  /// 这会强制 TextPainters 使用新字体重新创建其布局
   void invalidateLayout() {
     _needsLayout = true;
     _lastSize = null;
     _lastPicture = null;
     // Dispose and rebuild all block painters to recreate TextPainters
     // with the new system fonts
+    // 释放并重建所有块绘制器，以使用新的系统字体重新创建 TextPainters
     for (final painter in _blockPainters) {
       painter.dispose();
     }
@@ -289,17 +541,21 @@ class MarkdownPainter {
   }
 
   /// Layouts the markdown content with the given width.
+  /// 使用给定的宽度布局 Markdown 内容
   Size layout({required double maxWidth}) {
     if (_isEmpty) {
       _size = Size.zero;
       _needsLayout = false; // No need to layout if the markdown is empty.
+      // 如果 Markdown 为空，则无需布局
       return _size; // If the markdown is empty, return zero size.
+      // 如果 Markdown 为空，则返回零尺寸
     }
     var width = .0, height = .0;
     final blocks = _blockPainters;
     if (_blockOffsets.length != blocks.length) {
       // Resize the block sizes array
       // if it does not match the number of painters.
+      // 如果块尺寸数组与绘制器数量不匹配，则调整其大小
       _blockOffsets = Float32List(blocks.length);
     }
     final offsets = _blockOffsets;
@@ -311,10 +567,12 @@ class MarkdownPainter {
       height += size.height;
     }
     _needsLayout = false; // No need to layout if the markdown is empty.
+    // 如果 Markdown 为空，则无需布局
     return _size = Size(width, height);
   }
 
   /// Get the painter from the array by the vertical local position (dy).
+  /// 通过垂直本地位置 (dy) 从数组中获取绘制器
   /* static BlockPainter? _getPainterByHeight(
     Iterable<BlockPainter> painters,
     double dy,
@@ -336,11 +594,14 @@ class MarkdownPainter {
 
     // Only handle pointer down events for now.
     // You can extend this to handle other pointer events if needed.
+    // 目前仅处理指针按下事件
+    // 如果需要，您可以扩展此功能以处理其他指针事件
     if (event is! PointerDownEvent && event is! PointerUpEvent) return;
 
     final pos = event.localPosition;
     {
       // Binary search to find the block painter by the vertical position.
+      // 通过二分查找根据垂直位置找到块绘制器
       final dy = pos.dy;
       var min = 0;
       var max = _blockPainters.length;
@@ -352,14 +613,18 @@ class MarkdownPainter {
         var comp = 0;
         if (offset > dy) {
           // The offset is greater than the position.
+          // 偏移量大于位置
           comp = 1;
         } else {
           idx = mid; // Remember the index of the block painter.
+          // 记住块绘制器的索引
           // The offset is less than or equal to the position.
+          // 偏移量小于或等于位置
           comp = offset < dy ? -1 : 0;
         }
         if (comp == 0) {
           break; // Found the exact match.
+          // 找到精确匹配
         } else if (comp < 0) {
           min = mid + 1;
         } else {
@@ -370,6 +635,7 @@ class MarkdownPainter {
         case PointerDownEvent():
           final blockTapEvent = PointerDownEvent(
             // Adjust the position by the block offset.
+            // 根据块偏移量调整位置
             position: Offset(
               pos.dx,
               pos.dy - _blockOffsets[idx],
@@ -398,6 +664,7 @@ class MarkdownPainter {
         case PointerUpEvent():
           final blockTapEvent = PointerUpEvent(
             // Adjust the position by the block offset.
+            // 根据块偏移量调整位置
             position: Offset(
               pos.dx,
               pos.dy - _blockOffsets[idx],
@@ -427,9 +694,11 @@ class MarkdownPainter {
     }
 
     // We can use the position to determine which block was hit.
+    // 我们可以使用位置来确定哪个块被点击
     //_getPainterByHeight(_blockPainters, pos.dy)?.handleEvent(event);
 
     // Handle taps for the links with urls.
+    // 处理带有 URL 的链接的点击
     /* switch (event) {
       case PointerDownEvent(down: true):
       // Handle pointer down events.
@@ -442,15 +711,22 @@ class MarkdownPainter {
   /// The last size and picture used for painting.
   /// This is used to avoid unnecessary recreation of the canvas picture.
   /// If the size is the same as the last painted size,
+  /// 用于绘制的最后尺寸和图片
+  /// 这用于避免不必要地重新创建画布图片
+  /// 如果尺寸与上次绘制的尺寸相同
   Size? _lastSize;
 
   /// The last picture used for painting,
   /// to avoid unnecessary recreation of the canvas picture.
   /// If the size is the same as the last painted size,
   /// we can reuse the last picture.
+  /// 用于绘制的最后图片
+  /// 以避免不必要地重新创建画布图片
+  /// 如果尺寸与上次绘制的尺寸相同，我们可以重用最后的图片
   Picture? _lastPicture;
 
   /// The markdown content to paint.
+  /// 要绘制的 Markdown 内容
   void paint(Canvas canvas, Size size) {
     assert(
       !_needsLayout,
@@ -463,11 +739,17 @@ class MarkdownPainter {
 
     // Do not paint if the markdown is empty,
     // or if the size is empty or infinite.
+    // 如果 Markdown 为空，或者尺寸为空或无限，则不绘制
     if (_isEmpty || size.isEmpty || size.isInfinite) return;
 
-    if (_lastSize == size && _lastPicture != null) {
+    // Disable caching when animations are active
+    // 当动画活动时禁用缓存
+    final shouldCache = !hasActiveAnimations;
+
+    if (shouldCache && _lastSize == size && _lastPicture != null) {
       // If the size is the same as the last painted size,
       // we can reuse the last picture.
+      // 如果尺寸与上次绘制的尺寸相同，我们可以重用最后的图片
       canvas.drawPicture(_lastPicture!);
       return;
     }
@@ -476,27 +758,47 @@ class MarkdownPainter {
     final $canvas = Canvas(recorder);
 
     // Paint each block painter on the canvas.
+    // 在画布上绘制每个块绘制器
     var overflow = _size.height > size.height;
     var offset = .0;
+
     for (var painter in _blockPainters) {
       if (overflow && offset > size.height) {
         // If the painter's height exceeds the available height,
         // we stop painting further blocks.
+        // 如果绘制器的高度超过可用高度，我们停止绘制更多块
         break;
       }
       painter.paint($canvas, size, offset);
       offset += painter.size.height; // Update the offset for the next block.
+      // 更新下一个块的偏移量
     }
 
     final picture = recorder.endRecording();
     canvas.drawPicture(picture);
-    _lastSize = size;
-    _lastPicture = picture;
+
+    // Only cache when no animations are active
+    // 仅在没有活动动画时缓存
+    if (shouldCache) {
+      _lastSize = size;
+      _lastPicture = picture;
+    } else {
+      picture.dispose();
+    }
   }
 
   void dispose() {
     _lastPicture?.dispose();
     _lastPicture = null;
+
+    // Dispose all animation controllers
+    // 释放所有动画控制器
+    for (final controller in _controllers) {
+      controller.dispose();
+    }
+    _controllers = [];
+    _opacityAnimations = [];
+
     for (final painter in _blockPainters) {
       painter.dispose();
     }
@@ -536,6 +838,7 @@ class MarkdownPainter {
 } */
 
 /// Builds a tap recognizer for the given markdown span.
+/// 为给定的 Markdown 跨度构建点击识别器
 TapGestureRecognizer? _buildTapRecognizer(
   MD$Span span,
   void Function(String title, String url)? onTap,
@@ -553,6 +856,8 @@ TapGestureRecognizer? _buildTapRecognizer(
 /// Helper function to create a [TextSpan] from markdown spans.
 /// This function filters the spans based on the theme's span filter,
 /// and applies the appropriate text style to each span.
+/// 从 Markdown 跨度创建 [TextSpan] 的辅助函数
+/// 此函数根据主题的跨度过滤器过滤跨度，并将适当的文本样式应用于每个跨度
 TextSpan _paragraphFromMarkdownSpans({
   required Iterable<MD$Span> spans,
   required MarkdownThemeData theme,
@@ -588,33 +893,46 @@ TextSpan _paragraphFromMarkdownSpans({
 
 /// A class for painting blocks in markdown.
 /// You can implement this interface to create custom block painters.
+/// 用于在 Markdown 中绘制块的类
+/// 您可以实现此接口来创建自定义块绘制器
 abstract interface class BlockPainter {
   /// The current size of the block.
   /// Available only after [layout].
+  /// 块的当前尺寸
+  /// 仅在 [layout] 之后可用
   abstract final Size size;
 
   /// Handle tap pointer down events for the block.
+  /// 处理块的点击指针按下事件
   void handleTapDown(PointerDownEvent event);
 
   /// Handle tap pointer up events for the block.
+  /// 处理块的点击指针抬起事件
   void handleTapUp(PointerUpEvent event);
 
   /// Measure the block size with the given width.
+  /// 使用给定的宽度测量块尺寸
   Size layout(double width);
 
   /// Paint the block on the canvas at the given offset.
   /// [canvas] is the canvas to paint on
   /// [size] the whole size of the markdown content
   /// [offset] is the vertical offset to paint the block at
+  /// 在给定偏移量处在画布上绘制块
+  /// [canvas] 是要绘制的画布
+  /// [size] 是 Markdown 内容的整体尺寸
+  /// [offset] 是绘制块的垂直偏移量
   void paint(Canvas canvas, Size size, double offset);
 
   /// Dispose all resources used by the painter.
+  /// 释放绘制器使用的所有资源
   void dispose();
 }
 
 @meta.internal
 mixin ParagraphGestureHandler {
   /// Handle tap events with a [TextPainter].
+  /// 使用 [TextPainter] 处理点击事件
   @protected
   InlineSpan? hitTestInlineSpanWithPointerEvent(
       PointerEvent event, TextPainter painter) {
@@ -628,6 +946,7 @@ mixin ParagraphGestureHandler {
 }
 
 /// A class for painting a paragraph block in markdown.
+/// 用于在 Markdown 中绘制段落块的类
 @meta.internal
 class BlockPainter$Paragraph
     with ParagraphGestureHandler
@@ -654,11 +973,13 @@ class BlockPainter$Paragraph
   Size _size = Size.zero;
 
   /// Last span hit by the tap down event.
+  /// 点击按下事件命中的最后一个跨度
   TextSpan? _lastSpan;
 
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
+    // 在点击按下时重置跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span case TextSpan textSpan) _lastSpan = textSpan;
   }
@@ -666,14 +987,17 @@ class BlockPainter$Paragraph
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
+    // 点击按下时没有命中跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span != null && _lastSpan == span) {
       // If the span is the same as the one hit on tap down,
       // call the tap recognizer.
+      // 如果跨度与点击按下时命中的跨度相同，则调用点击识别器
       if (span case TextSpan(recognizer: TapGestureRecognizer(:var onTap)))
         onTap?.call();
     }
     _lastSpan = null; // Clear the span after handling the tap.
+    // 处理点击后清除跨度
   }
 
   @override
@@ -688,6 +1012,7 @@ class BlockPainter$Paragraph
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
+    // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
     painter.paint(
       canvas,
@@ -702,6 +1027,7 @@ class BlockPainter$Paragraph
 }
 
 /// A class for painting a paragraph block in markdown.
+/// 用于在 Markdown 中绘制段落块的类
 @meta.internal
 class BlockPainter$Heading
     with ParagraphGestureHandler
@@ -730,11 +1056,13 @@ class BlockPainter$Heading
   Size _size = Size.zero;
 
   /// Last span hit by the tap down event.
+  /// 点击按下事件命中的最后一个跨度
   TextSpan? _lastSpan;
 
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
+    // 在点击按下时重置跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span case TextSpan textSpan) _lastSpan = textSpan;
   }
@@ -742,14 +1070,17 @@ class BlockPainter$Heading
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
+    // 点击按下时没有命中跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span != null && _lastSpan == span) {
       // If the span is the same as the one hit on tap down,
       // call the tap recognizer.
+      // 如果跨度与点击按下时命中的跨度相同，则调用点击识别器
       if (span case TextSpan(recognizer: TapGestureRecognizer(:var onTap)))
         onTap?.call();
     }
     _lastSpan = null; // Clear the span after handling the tap.
+    // 处理点击后清除跨度
   }
 
   @override
@@ -764,6 +1095,7 @@ class BlockPainter$Heading
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
+    // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
     painter.paint(
       canvas,
@@ -778,6 +1110,7 @@ class BlockPainter$Heading
 }
 
 /// A class for painting a quote block in markdown.
+/// 用于在 Markdown 中绘制引用块的类
 @meta.internal
 class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
   BlockPainter$Quote({
@@ -806,8 +1139,10 @@ class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
   final TextPainter painter;
 
   final int indent; // Indentation for quote blocks.
+  // 引用块的缩进
 
   static const double lineIndent = 10.0; // Indentation for quote blocks.
+  // 引用块的缩进
 
   final Paint linePaint;
 
@@ -816,11 +1151,13 @@ class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
   Size _size = Size.zero;
 
   /// Last span hit by the tap down event.
+  /// 点击按下事件命中的最后一个跨度
   TextSpan? _lastSpan;
 
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
+    // 在点击按下时重置跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span case TextSpan textSpan) _lastSpan = textSpan;
   }
@@ -828,19 +1165,23 @@ class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
+    // 点击按下时没有命中跨度
     final span = hitTestInlineSpanWithPointerEvent(event, painter);
     if (span != null && _lastSpan == span) {
       // If the span is the same as the one hit on tap down,
       // call the tap recognizer.
+      // 如果跨度与点击按下时命中的跨度相同，则调用点击识别器
       if (span case TextSpan(recognizer: TapGestureRecognizer(:var onTap)))
         onTap?.call();
     }
     _lastSpan = null; // Clear the span after handling the tap.
+    // 处理点击后清除跨度
   }
 
   @override
   Size layout(double width) {
     // Adjust width for indentation.
+    // 调整宽度以适应缩进
     painter.layout(
       minWidth: 0,
       maxWidth: math.max(width - lineIndent - indent * lineIndent, 0),
@@ -854,9 +1195,11 @@ class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
+    // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
 
     // --- Draw vertical lines --- //
+    // --- 绘制垂直线 --- //
     for (var i = 1; i <= indent; i++)
       canvas.drawLine(
         Offset(
@@ -886,6 +1229,7 @@ class BlockPainter$Quote with ParagraphGestureHandler implements BlockPainter {
 }
 
 /// A helper class to store layout information for a single list item.
+/// 用于存储单个列表项布局信息的辅助类
 class _ListItemMetrics {
   _ListItemMetrics({
     required this.bulletPainter,
@@ -909,6 +1253,7 @@ class _ListItemMetrics {
 }
 
 /// A class for painting a list block in markdown.
+/// 用于在 Markdown 中绘制列表块的类
 @meta.internal
 class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
   BlockPainter$List({
@@ -922,9 +1267,11 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
   final List<_ListItemMetrics> _painters;
 
   // Indentation for the entire list block.
+  // 整个列表块的缩进
   static const double _baseIndent = 8.0;
 
   // Indentation for each level of nesting.
+  // 每个嵌套级别的缩进
   static const double _levelIndent = 16.0;
 
   @override
@@ -932,6 +1279,7 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
   Size _size = Size.zero;
 
   /// Last span hit by the tap down event.
+  /// 点击按下事件命中的最后一个跨度
   InlineSpan? _lastSpan;
 
   InlineSpan? _getSpanForPosition(Offset localPosition) {
@@ -952,12 +1300,14 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
+    // 在点击按下时重置跨度
     _lastSpan = _getSpanForPosition(event.localPosition);
   }
 
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
+    // 点击按下时没有命中跨度
     final newSpan = _getSpanForPosition(event.localPosition);
     if (newSpan != null && _lastSpan == newSpan) {
       if (newSpan
@@ -967,6 +1317,7 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
     }
 
     _lastSpan = null; // Clear the span after handling the tap.
+    // 处理点击后清除跨度
   }
 
   @override
@@ -1044,6 +1395,7 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
 }
 
 /// A class for painting a spacer block in markdown.
+/// 用于在 Markdown 中绘制间隔块的类
 @meta.internal
 class BlockPainter$Spacer implements BlockPainter {
   BlockPainter$Spacer({
@@ -1061,9 +1413,11 @@ class BlockPainter$Spacer implements BlockPainter {
 
   @override
   void handleTapDown(PointerDownEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   void handleTapUp(PointerUpEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   Size layout(double width) {
@@ -1074,6 +1428,7 @@ class BlockPainter$Spacer implements BlockPainter {
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // Do not paint anything
+    // 不绘制任何内容
     /* canvas.drawRect(
       Rect.fromLTWH(0, offset, size.width, _size.height),
       Paint()..color = theme.textStyle.color ?? const Color(0x00000000),
@@ -1083,10 +1438,12 @@ class BlockPainter$Spacer implements BlockPainter {
   @override
   void dispose() {
     // Noting to dispose
+    // 没有需要释放的内容
   }
 }
 
 /// A class for painting a spacer block in markdown.
+/// 用于在 Markdown 中绘制间隔块的类
 @meta.internal
 class BlockPainter$Divider implements BlockPainter {
   BlockPainter$Divider({
@@ -1106,9 +1463,11 @@ class BlockPainter$Divider implements BlockPainter {
 
   @override
   void handleTapDown(PointerDownEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   void handleTapUp(PointerUpEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   Size layout(double width) {
@@ -1119,6 +1478,7 @@ class BlockPainter$Divider implements BlockPainter {
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // Draw a horizontal line across the width of the canvas.
+    // 在画布宽度上绘制一条水平线
     final center = offset + _size.height / 2;
     canvas.drawLine(
       Offset(0, center),
@@ -1130,10 +1490,12 @@ class BlockPainter$Divider implements BlockPainter {
   @override
   void dispose() {
     // Noting to dispose
+    // 没有需要释放的内容
   }
 }
 
 /// A class for painting a code block in markdown.
+/// 用于在 Markdown 中绘制代码块的类
 @meta.internal
 class BlockPainter$Code implements BlockPainter {
   BlockPainter$Code({
@@ -1154,6 +1516,7 @@ class BlockPainter$Code implements BlockPainter {
         );
 
   static const double padding = 8.0; // Padding for code blocks.
+  // 代码块的内边距
 
   final MarkdownThemeData theme;
 
@@ -1165,14 +1528,17 @@ class BlockPainter$Code implements BlockPainter {
 
   @override
   void handleTapDown(PointerDownEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   void handleTapUp(PointerUpEvent _) {/* Do nothing */}
+  /* 不执行任何操作 */
 
   @override
   Size layout(double width) {
     if (width <= padding * 2) {
       // If the width is less than or equal to padding, return zero size.
+      // 如果宽度小于或等于内边距，则返回零尺寸
       _size = Size.zero;
       return _size;
     }
@@ -1182,13 +1548,16 @@ class BlockPainter$Code implements BlockPainter {
     );
     return _size = Size(
       painter.size.width + padding * 2, // Add padding to the width.
+      // 将内边距添加到宽度
       painter.size.height + padding * 2, // Add padding to the height.
+      // 将内边距添加到高度
     );
   }
 
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
+    // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
     canvas.drawRRect(
       RRect.fromRectAndRadius(
@@ -1213,6 +1582,7 @@ class BlockPainter$Code implements BlockPainter {
 }
 
 /// A class for painting a table block in markdown.
+/// 用于在 Markdown 中绘制表格块的类
 @meta.internal
 class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   BlockPainter$Table({
@@ -1234,12 +1604,15 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
               theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
 
   /// Padding for table cells.
+  /// 表格单元格的内边距
   static const double padding = 8.0;
 
   /// The theme for the markdown table.
+  /// Markdown 表格的主题
   final MarkdownThemeData theme;
 
   /// The number of columns in the table.
+  /// 表格中的列数
   final int columns;
 
   final List<double> _columnWidths;
@@ -1250,9 +1623,11 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   Float32List? _borderPoints;
 
   /// The header row of the table.
+  /// 表格的标题行
   final MD$TableRow header;
 
   /// The rows of the table.
+  /// 表格的行
   final List<MD$TableRow> rows;
 
   @override
@@ -1262,11 +1637,13 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   List<List<TextPainter>> _cellPainters = const [];
 
   /// Last span hit by the tap down event.
+  /// 点击按下事件命中的最后一个跨度
   TextSpan? _lastSpan;
 
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
+    // 在点击按下时重置跨度
     final span = _getSpanForOffset(event.localPosition);
     if (span != null) {
       _lastSpan = span;
@@ -1276,14 +1653,17 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
+    // 点击按下时没有命中跨度
     final span = _getSpanForOffset(event.localPosition);
     if (span != null && _lastSpan == span) {
       // If the span is the same as the one hit on tap down,
       // call the tap recognizer.
+      // 如果跨度与点击按下时命中的跨度相同，则调用点击识别器
       if (span case TextSpan(recognizer: TapGestureRecognizer(:var onTap)))
         onTap?.call();
     }
     _lastSpan = null; // Clear the span after handling the tap.
+    // 处理点击后清除跨度
   }
 
   TextSpan? _getSpanForOffset(Offset position) {
@@ -1298,6 +1678,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
       if (position.dy >= currentY && position.dy < currentY + rowHeight) {
         // In this row.
+        // 在此行中
         for (int c = 0; c < _cellPainters[r].length; c++) {
           final painter = _cellPainters[r][c];
           if (painter.text == null) {
@@ -1308,6 +1689,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
           if (position.dx >= currentX && position.dx < currentX + columnWidth) {
             // In this cell.
+            // 在此单元格中
             final verticalPadding = (rowHeight - painter.height) / 2;
             final horizontalPadding =
                 (r == 0) ? (columnWidth - painter.width) / 2 : padding;
@@ -1317,6 +1699,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
             final localPosition = position - painterOffset;
 
             // Check if inside the actual painted text area.
+            // 检查是否在实际绘制的文本区域内
             if (localPosition.dx < 0 ||
                 localPosition.dx > painter.width ||
                 localPosition.dy < 0 ||
@@ -1331,6 +1714,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
               return span;
             }
             return null; // Found cell, but no span.
+            // 找到单元格，但没有跨度
           }
           currentX += columnWidth;
         }
@@ -1345,6 +1729,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     if (columns < 1) return _size = Size.zero;
 
     // Dispose old painters
+    // 释放旧的绘制器
     for (final row in _cellPainters) {
       for (final painter in row) {
         painter.dispose();
@@ -1356,6 +1741,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final minWidths = List<double>.filled(columns, 0.0);
 
     // Create painters for each row and column and calculate natural widths
+    // 为每行和每列创建绘制器并计算自然宽度
     _cellPainters = List.generate(allRows.length, (r) {
       final row = allRows[r];
       return List.generate(columns, (c) {
@@ -1375,11 +1761,13 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         );
 
         // Calculate natural width
+        // 计算自然宽度
         textPainter.layout(maxWidth: double.infinity);
         naturalWidths[c] =
             math.max(naturalWidths[c], textPainter.width + padding * 2);
 
         // Calculate min width (longest word)
+        // 计算最小宽度（最长单词）
         final cellText = cell.map((s) => s.text).join();
         final words = cellText.split(RegExp(r'\s+'));
         if (words.isNotEmpty) {
@@ -1403,6 +1791,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final totalWidth = _columnWidths.reduce((a, b) => a + b);
 
     // Layout painters with final widths and calculate row heights
+    // 使用最终宽度布局绘制器并计算行高
 
     double totalHeight = 0.0;
     for (int r = 0; r < allRows.length; r++) {
@@ -1422,9 +1811,11 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     }
 
     // Cache border points
+    // 缓存边框点
     final points = Float32List(((allRows.length - 1) + (columns - 1)) * 4);
     var pointIndex = 0;
     // Horizontal lines
+    // 水平线
     double lineY = 0;
     for (int r = 0; r < allRows.length - 1; r++) {
       lineY += _rowHeights[r];
@@ -1434,6 +1825,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
       points[pointIndex++] = lineY;
     }
     // Vertical lines
+    // 垂直线
     double lineX = 0;
     for (int c = 0; c < columns - 1; c++) {
       lineX += _columnWidths[c];
@@ -1450,6 +1842,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
+    // 如果宽度小于所需宽度，则不绘制任何内容
     if (columns < 1) return;
 
     double currentY = offset;
@@ -1460,6 +1853,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
       double currentX = 0;
 
       // Draw background for even data rows.
+      // 为偶数数据行绘制背景
       if (r % 2 == 0 && r != 0) {
         canvas.drawRect(
           Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
@@ -1477,7 +1871,9 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         final verticalPadding = (rowHeights[r] - painter.height) / 2;
         final horizontalPadding = (r == 0)
             ? (_columnWidths[c] - painter.width) / 2 // Center for header rows
+            // 标题行居中
             : padding; // Left align for data rows
+        // 数据行左对齐
 
         painter.paint(
           canvas,
@@ -1492,6 +1888,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     }
 
     // Draw inner borders
+    // 绘制内部边框
     if (_borderPoints != null) {
       canvas.save();
       canvas.translate(0, offset);
@@ -1500,6 +1897,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     }
 
     // Draw outer borders
+    // 绘制外部边框
     canvas.drawRect(
       Rect.fromLTRB(
         0,
@@ -1525,6 +1923,9 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   /// If total minimum width exceeds availableWidth,
   /// it returns the minimum widths as-is,
   /// implying that the content will overflow and require scrolling.
+  /// 在列之间分配宽度的辅助函数，遵守最小值
+  /// 如果总最小宽度超过可用宽度，则按原样返回最小宽度
+  /// 这意味着内容将溢出并需要滚动
   List<double> _distributeWidths(
       List<double> natural, List<double> min, double availableWidth) {
     final totalNatural = natural.reduce((a, b) => a + b);

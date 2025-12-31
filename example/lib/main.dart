@@ -402,6 +402,14 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
   Timer? _streamTimer;
   int _charIndex = 0;
   bool _isStreaming = false;
+  bool _animationEnabled = true;
+
+  // Animation configuration
+  MarkdownAnimationConfig get _animationConfig => MarkdownAnimationConfig(
+        enabled: _animationEnabled,
+        fadeInDuration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
 
   // Sample markdown content to stream
   static const String _streamingContent = '''
@@ -531,7 +539,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
     setState(() => _isStreaming = true);
 
     // Stream characters with varying chunk sizes
-    _streamTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
+    _streamTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       if (_charIndex >= _streamingContent.length) {
         timer.cancel();
         setState(() => _isStreaming = false);
@@ -569,6 +577,17 @@ This example is using `package:flutter_md/flutter_md.dart`.
           centerTitle: true,
           title: const Text('Streaming Demo'),
           actions: <Widget>[
+            // Animation toggle button
+            IconButton(
+              icon: Icon(_animationEnabled
+                  ? Icons.animation
+                  : Icons.animation_outlined),
+              tooltip:
+                  _animationEnabled ? 'Disable Animation' : 'Enable Animation',
+              onPressed: () {
+                setState(() => _animationEnabled = !_animationEnabled);
+              },
+            ),
             // Play/Pause button
             IconButton(
               icon: Icon(_isStreaming ? Icons.pause : Icons.play_arrow),
@@ -624,8 +643,9 @@ This example is using `package:flutter_md/flutter_md.dart`.
                         value: '${markdown.blocks.length}',
                       ),
                       _StatChip(
-                        label: 'First Open',
-                        value: '${_decoder.firstOpenIndex}',
+                        label: 'Closed',
+                        value: '${markdown.closedBlockCount ?? //
+                            markdown.blocks.length}',
                       ),
                     ],
                   ),
@@ -633,14 +653,15 @@ This example is using `package:flutter_md/flutter_md.dart`.
               ),
               // Markdown output
               Expanded(
-                child: Card(
-                  margin: const EdgeInsets.all(8),
+                child: SizedBox(
+                  width: double.infinity,
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(50),
                     child: ValueListenableBuilder<Markdown>(
                       valueListenable: _outputController,
                       builder: (context, markdown, _) => MarkdownWidget(
                         markdown: markdown,
+                        animationConfig: _animationConfig,
                       ),
                     ),
                   ),

@@ -270,8 +270,8 @@ _ParseResult _parseMarkdownLines({
           } else if (item.intent > indent) {
             final children = traverse(indent: item.intent);
             if (items.isNotEmpty) {
-              items.last = items.last.copyWith(
-                  children: List<MD$ListItem>.unmodifiable(children));
+              items.last = items.last
+                  .copyWith(children: List<MD$ListItem>.unmodifiable(children));
             } else {
               items.add(MD$ListItem(
                 marker: item.marker,
@@ -791,6 +791,11 @@ class StreamingMarkdownDecoder {
   /// Index of the first open line, used to skip closed lines during parsing.
   int _firstOpenIndex = 0;
 
+  /// Number of closed blocks.
+  /// Only the first [closedBlockCount] blocks are fully closed
+  /// and won't change.
+  int _closedBlockCount = 0;
+
   /// Returns the current list of parsed blocks.
   List<MD$Block> get blocks => List.unmodifiable(_blocks);
 
@@ -799,6 +804,13 @@ class StreamingMarkdownDecoder {
 
   /// Returns the index of the first open line.
   int get firstOpenIndex => _firstOpenIndex;
+
+  /// Returns the number of closed blocks.
+  /// Only the first [closedBlockCount] blocks are fully closed
+  /// and won't change.
+  /// The remaining blocks (if any) are still open
+  /// and may receive more content.
+  int get closedBlockCount => _closedBlockCount;
 
   /// Appends a chunk of text and triggers incremental parsing.
   ///
@@ -809,6 +821,7 @@ class StreamingMarkdownDecoder {
       return Markdown(
         markdown: _lines.map((l) => l.text).join('\n'),
         blocks: List.unmodifiable(_blocks),
+        closedBlockCount: _closedBlockCount,
       );
     }
 
@@ -818,6 +831,7 @@ class StreamingMarkdownDecoder {
     return Markdown(
       markdown: _lines.map((l) => l.text).join('\n'),
       blocks: List.unmodifiable(_blocks),
+      closedBlockCount: _closedBlockCount,
     );
   }
 
@@ -897,6 +911,51 @@ class StreamingMarkdownDecoder {
         }
       }
     }
+
+    // Update closed block count
+    _updateClosedBlockCount();
+  }
+
+  /// Updates the count of closed blocks.
+  void _updateClosedBlockCount() {
+    if (_blocks.isEmpty) {
+      _closedBlockCount = 0;
+      return;
+    }
+
+    // If all lines are closed, all blocks are closed
+    if (_lines.isEmpty || _lines.every((l) => l.state == LineState.closed)) {
+      _closedBlockCount = _blocks.length;
+      return;
+    }
+
+    // If there are open lines, the last block is likely still open
+    // Count blocks that are fully within closed lines
+    var lineIdx = 0;
+    var closedCount = 0;
+
+    for (final block in _blocks) {
+      final linesInBlock = _estimateBlockLines(block);
+      final blockEndLine = lineIdx + linesInBlock;
+
+      // Check if all lines of this block are closed
+      var allClosed = true;
+      for (var i = lineIdx; i < blockEndLine && i < _lines.length; i++) {
+        if (_lines[i].state == LineState.open) {
+          allClosed = false;
+          break;
+        }
+      }
+
+      if (allClosed && blockEndLine <= _firstOpenIndex) {
+        closedCount++;
+        lineIdx = blockEndLine;
+      } else {
+        break;
+      }
+    }
+
+    _closedBlockCount = closedCount;
   }
 
   /// Truncates blocks that need to be re-parsed.
@@ -940,6 +999,7 @@ class StreamingMarkdownDecoder {
     _lines.clear();
     _blocks.clear();
     _firstOpenIndex = 0;
+    _closedBlockCount = 0;
   }
 
   /// Builds the final Markdown result.
@@ -947,6 +1007,7 @@ class StreamingMarkdownDecoder {
     return Markdown(
       markdown: _lines.map((l) => l.text).join('\n'),
       blocks: List.unmodifiable(_blocks),
+      closedBlockCount: _closedBlockCount,
     );
   }
 }
