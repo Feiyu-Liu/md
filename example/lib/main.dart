@@ -405,13 +405,13 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
   bool _isStreaming = false;
   bool _animationEnabled = true;
 
-  // Animation configuration
+  // Animation configuration easeOutCubic
   MarkdownAnimationConfig get _animationConfig => MarkdownAnimationConfig(
         enabled: _animationEnabled,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 1000),
+        curve: Curves.easeOutQuart,
         opacityRange: const AnimationRange(start: 0.0, end: 1.0),
-        offsetRange: const AnimationRange(start: 20.0, end: 0.0),
+        offsetRange: const AnimationRange(start: 15.0, end: 0.0),
         blurRange: const AnimationRange(start: 5.0, end: 0.0),
       );
 
@@ -427,6 +427,27 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
 #### This is a Heading h4
 ##### This is a Heading h5
 ###### This is a Heading h6
+
+---
+
+## Lists
+
+### Unordered
+
+* Item 1
+* Item 2
+* Item 2a
+* Item 2b
+    * Item 3a
+    * Item 3b
+
+### Ordered
+
+1. Item **1**
+2. Item **2**
+3. Item **3**
+    1. Item **3a** with [link](https://example.com)
+    2. Item **3b**
 
 ---
 
@@ -459,26 +480,6 @@ Duis aute irure dolor in _reprehenderit in voluptate velit esse_ cillum dolore e
 
 ---
 
-## Lists
-
-### Unordered
-
-* Item 1
-* Item 2
-* Item 2a
-* Item 2b
-    * Item 3a
-    * Item 3b
-
-### Ordered
-
-1. Item **1**
-2. Item **2**
-3. Item **3**
-    1. Item **3a** with [link](https://example.com)
-    2. Item **3b**
-
----
 
 ## Links
 
@@ -545,7 +546,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
     setState(() => _isStreaming = true);
 
     // Stream characters with varying chunk sizes
-    _streamTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
+    _streamTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
       if (_charIndex >= _streamingContent.length) {
         timer.cancel();
         setState(() => _isStreaming = false);

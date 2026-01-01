@@ -42,8 +42,8 @@ class MarkdownAnimationConfig {
   /// Creates a new animation configuration.
   const MarkdownAnimationConfig({
     this.enabled = false,
-    this.duration = const Duration(milliseconds: 300),
-    this.curve = Curves.easeOut,
+    this.duration = const Duration(milliseconds: 500),
+    this.curve = Curves.easeOutCubic,
     this.opacityRange,
     this.offsetRange,
     this.blurRange,
@@ -120,4 +120,3 @@ class MarkdownAnimationConfig {
       'offsetRange: $offsetRange, '
       'blurRange: $blurRange)';
 }
-
