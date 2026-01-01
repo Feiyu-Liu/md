@@ -14,6 +14,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
     required this.markdown,
     this.theme,
     this.animationConfig = MarkdownAnimationConfig.disabled,
+    this.isStreamingComplete,
     super.key, // ignore: unused_element
   });
 
@@ -26,6 +27,13 @@ class MarkdownWidget extends LeafRenderObjectWidget {
   /// Animation configuration for block fade-in effects.
   /// 块淡入效果的动画配置
   final MarkdownAnimationConfig animationConfig;
+
+  /// Notifier indicating whether streaming is complete.
+  /// When streaming is complete, all blocks (including the last one)
+  /// are considered closed.
+  /// 流式输出是否完成的通知器。
+  /// 当流式输出完成时，所有 blocks（包括最后一个）都被视为已闭合。
+  final ValueNotifier<bool>? isStreamingComplete;
 
   @override
   RenderObject createRenderObject(BuildContext context) {
@@ -41,6 +49,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
       markdown: markdown,
       theme: theme,
       animationConfig: animationConfig,
+      isStreamingComplete: isStreamingComplete,
     );
   }
 
@@ -61,6 +70,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
       markdown: markdown,
       theme: theme,
       animationConfig: animationConfig,
+      isStreamingComplete: isStreamingComplete,
     );
   }
 }

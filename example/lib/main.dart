@@ -398,6 +398,7 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
   final StreamingMarkdownDecoder _decoder = StreamingMarkdownDecoder();
   final ValueNotifier<Markdown> _outputController =
       ValueNotifier<Markdown>(const Markdown.empty());
+  final ValueNotifier<bool> _isStreamingComplete = ValueNotifier<bool>(false);
 
   Timer? _streamTimer;
   int _charIndex = 0;
@@ -525,6 +526,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
   void dispose() {
     _streamTimer?.cancel();
     _outputController.dispose();
+    _isStreamingComplete.dispose();
     super.dispose();
   }
 
@@ -535,14 +537,16 @@ This example is using `package:flutter_md/flutter_md.dart`.
     _decoder.reset();
     _charIndex = 0;
     _outputController.value = const Markdown.empty();
+    _isStreamingComplete.value = false;
 
     setState(() => _isStreaming = true);
 
     // Stream characters with varying chunk sizes
-    _streamTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+    _streamTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
       if (_charIndex >= _streamingContent.length) {
         timer.cancel();
         setState(() => _isStreaming = false);
+        _isStreamingComplete.value = true;
         return;
       }
 
@@ -562,6 +566,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
   void _stopStreaming() {
     _streamTimer?.cancel();
     setState(() => _isStreaming = false);
+    _isStreamingComplete.value = true;
   }
 
   void _resetStreaming() {
@@ -569,6 +574,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
     _decoder.reset();
     _charIndex = 0;
     _outputController.value = const Markdown.empty();
+    _isStreamingComplete.value = false;
   }
 
   @override
@@ -621,35 +627,44 @@ This example is using `package:flutter_md/flutter_md.dart`.
               // Stats bar
               ValueListenableBuilder<Markdown>(
                 valueListenable: _outputController,
-                builder: (context, markdown, _) => Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _StatChip(
-                        label: 'Chars',
-                        value: '$_charIndex/${_streamingContent.length}',
-                      ),
-                      _StatChip(
-                        label: 'Lines',
-                        value: '${_decoder.lineCount}',
-                      ),
-                      _StatChip(
-                        label: 'Blocks',
-                        value: '${markdown.blocks.length}',
-                      ),
-                      _StatChip(
-                        label: 'Closed',
-                        value: '${markdown.closedBlockCount ?? //
-                            markdown.blocks.length}',
-                      ),
-                    ],
-                  ),
-                ),
+                builder: (context, markdown, _) {
+                  // Calculate closed blocks count based on new logic
+                  final closedCount = _isStreamingComplete.value
+                      ? markdown.blocks.length
+                      : (markdown.blocks.isNotEmpty
+                          ? markdown.blocks.length - 1
+                          : 0);
+
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _StatChip(
+                          label: 'Chars',
+                          value: '$_charIndex/${_streamingContent.length}',
+                        ),
+                        _StatChip(
+                          label: 'Lines',
+                          value: '${_decoder.lineCount}',
+                        ),
+                        _StatChip(
+                          label: 'Blocks',
+                          value: '${markdown.blocks.length}',
+                        ),
+                        _StatChip(
+                          label: 'Closed',
+                          value: '$closedCount',
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
               // Markdown output
               Expanded(
@@ -662,6 +677,7 @@ This example is using `package:flutter_md/flutter_md.dart`.
                       builder: (context, markdown, _) => MarkdownWidget(
                         markdown: markdown,
                         animationConfig: _animationConfig,
+                        isStreamingComplete: _isStreamingComplete,
                       ),
                     ),
                   ),

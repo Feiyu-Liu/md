@@ -23,12 +23,18 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     required Markdown markdown,
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
+    ValueNotifier<bool>? isStreamingComplete,
   })  : _animationConfig = animationConfig,
+        _isStreamingComplete = isStreamingComplete,
         _painter = MarkdownPainter(
           markdown: markdown,
           theme: theme,
           animationConfig: animationConfig,
-        );
+          isStreamingComplete: isStreamingComplete,
+        ) {
+    // Listen to streaming complete changes
+    _isStreamingComplete?.addListener(_handleStreamingCompleteChanged);
+  }
 
   /// Painter for rendering markdown content.
   /// 用于渲染 Markdown 内容的绘制器
@@ -38,9 +44,21 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   /// 动画配置
   MarkdownAnimationConfig _animationConfig;
 
+  /// Notifier indicating whether streaming is complete.
+  /// 流式输出是否完成的通知器
+  ValueNotifier<bool>? _isStreamingComplete;
+
   /// Set of active tickers for animation.
   /// 用于动画的活动 Ticker 集合
   Set<Ticker>? _tickers;
+
+  /// Handles streaming complete state changes.
+  /// 处理流式输出完成状态变化
+  void _handleStreamingCompleteChanged() {
+    // When streaming complete state changes, request repaint
+    // 当流式输出完成状态变化时，请求重绘
+    markNeedsPaint();
+  }
 
   @override
   Ticker createTicker(TickerCallback onTick) {
@@ -156,12 +174,21 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     required Markdown markdown,
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
+    ValueNotifier<bool>? isStreamingComplete,
   }) {
+    // Update streaming complete notifier
+    if (_isStreamingComplete != isStreamingComplete) {
+      _isStreamingComplete?.removeListener(_handleStreamingCompleteChanged);
+      _isStreamingComplete = isStreamingComplete;
+      _isStreamingComplete?.addListener(_handleStreamingCompleteChanged);
+    }
+
     _animationConfig = animationConfig;
     if (_painter.update(
       markdown: markdown,
       theme: theme,
       animationConfig: animationConfig,
+      isStreamingComplete: isStreamingComplete,
     )) {
       // Mark the render object as needing layout.
       // 将渲染对象标记为需要重新布局
@@ -180,12 +207,14 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   void detach() {
     PaintingBinding.instance.systemFonts
         .removeListener(_handleSystemFontsChange);
+    _isStreamingComplete?.removeListener(_handleStreamingCompleteChanged);
     super.detach();
   }
 
   @override
   @protected
   void dispose() {
+    _isStreamingComplete?.removeListener(_handleStreamingCompleteChanged);
     // Dispose all tickers
     // 释放所有 tickers
     if (_tickers != null) {
@@ -238,9 +267,11 @@ class MarkdownPainter {
     required Markdown markdown,
     required MarkdownThemeData theme,
     this.animationConfig = MarkdownAnimationConfig.disabled,
+    ValueNotifier<bool>? isStreamingComplete,
   })  : _markdown = markdown,
         _theme = theme,
-        _isEmpty = markdown.closedBlocks.isEmpty,
+        _isStreamingComplete = isStreamingComplete,
+        _isEmpty = _getClosedBlocks(markdown, isStreamingComplete).isEmpty,
         _size = Size.zero {
     _rebuild();
   }
@@ -248,6 +279,31 @@ class MarkdownPainter {
   /// Animation configuration.
   /// 动画配置
   MarkdownAnimationConfig animationConfig;
+
+  /// Notifier indicating whether streaming is complete.
+  /// 流式输出是否完成的通知器
+  ValueNotifier<bool>? _isStreamingComplete;
+
+  /// Get closed blocks based on streaming state.
+  /// 根据流式输出状态获取已闭合的块
+  static List<MD$Block> _getClosedBlocks(
+    Markdown markdown,
+    ValueNotifier<bool>? isStreamingComplete,
+  ) {
+    final blocks = markdown.blocks;
+    if (blocks.isEmpty) return blocks;
+
+    // If streaming is complete, all blocks are closed
+    // 如果流式输出完成，所有块都是闭合的
+    if (isStreamingComplete?.value ?? false) {
+      return blocks;
+    }
+
+    // Otherwise, all blocks except the last one are closed
+    // 否则，除了最后一个块之外的所有块都是闭合的
+    if (blocks.length == 1) return const <MD$Block>[];
+    return blocks.sublist(0, blocks.length - 1);
+  }
 
   /// TickerProvider for creating AnimationControllers.
   /// 用于创建 AnimationController 的 TickerProvider
@@ -358,8 +414,9 @@ class MarkdownPainter {
 
     // Only render closed blocks when animation is enabled
     // 启用动画时只渲染已闭合的块
-    final blocksToRender =
-        animationConfig.enabled ? _markdown.closedBlocks : _markdown.blocks;
+    final blocksToRender = animationConfig.enabled
+        ? _getClosedBlocks(_markdown, _isStreamingComplete)
+        : _markdown.blocks;
 
     _isEmpty = blocksToRender.isEmpty;
 
@@ -397,7 +454,7 @@ class MarkdownPainter {
   void _rebuildAnimations() {
     if (_vsync == null || !animationConfig.enabled) return;
 
-    final blocksToRender = _markdown.closedBlocks;
+    final blocksToRender = _getClosedBlocks(_markdown, _isStreamingComplete);
     _isEmpty = blocksToRender.isEmpty;
 
     final filter = _theme.blockFilter;
@@ -488,19 +545,26 @@ class MarkdownPainter {
     required Markdown markdown,
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
+    ValueNotifier<bool>? isStreamingComplete,
   }) {
     final configChanged = this.animationConfig != animationConfig;
+    final streamingCompleteChanged =
+        _isStreamingComplete != isStreamingComplete;
+
     this.animationConfig = animationConfig;
+    _isStreamingComplete = isStreamingComplete;
 
     // Check if closed block count changed (for animation)
     final oldClosedCount = _lastClosedCount;
-    final newClosedCount = markdown.closedBlockCount ?? markdown.blocks.length;
+    final newClosedBlocks = _getClosedBlocks(markdown, isStreamingComplete);
+    final newClosedCount = newClosedBlocks.length;
     final closedCountChanged = newClosedCount != oldClosedCount;
 
     if (identical(_markdown, markdown) &&
         identical(_theme, theme) &&
         !configChanged &&
-        !closedCountChanged) {
+        !closedCountChanged &&
+        !streamingCompleteChanged) {
       return false;
     }
 
@@ -509,7 +573,7 @@ class MarkdownPainter {
     _markdown = markdown;
     _theme = theme;
     _isEmpty = animationConfig.enabled
-        ? markdown.closedBlocks.isEmpty
+        ? newClosedBlocks.isEmpty
         : markdown.isEmpty;
 
     // If animation is enabled and vsync is available, rebuild with animations

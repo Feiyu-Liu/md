@@ -13,15 +13,13 @@ final class Markdown {
   const Markdown({
     required this.markdown,
     required this.blocks,
-    this.closedBlockCount,
   });
 
   /// Empty markdown.
   /// {@macro markdown}
   const Markdown.empty()
       : markdown = '',
-        blocks = const <MD$Block>[],
-        closedBlockCount = 0;
+        blocks = const <MD$Block>[];
 
   /// Creates a [Markdown] instance from a markdown string.
   /// This method uses the [markdownDecoder] to parse the string
@@ -30,37 +28,14 @@ final class Markdown {
   /// This method is relatively expensive and should be used
   /// sparingly, outside build phase, especially for large markdown strings.
   /// {@macro markdown}
-  factory Markdown.fromString(String markdown) {
-    final result = markdownDecoder.convert(markdown);
-    // When parsing from string, all blocks are closed
-    return Markdown(
-      markdown: result.markdown,
-      blocks: result.blocks,
-      closedBlockCount: result.blocks.length,
-    );
-  }
+  factory Markdown.fromString(String markdown) =>
+      markdownDecoder.convert(markdown);
 
   /// The original markdown string.
   final String markdown;
 
   /// List of blocks in the markdown.
   final List<MD$Block> blocks;
-
-  /// Number of closed blocks.
-  /// - For streaming parsing: only the first [closedBlockCount] blocks are
-  ///   fully closed and won't change.
-  /// - For batch parsing (fromString): equals [blocks.length] (all closed).
-  /// - If null, all blocks are considered closed.
-  final int? closedBlockCount;
-
-  /// Returns the list of closed blocks.
-  /// Only closed blocks should be rendered during streaming.
-  List<MD$Block> get closedBlocks {
-    final count = closedBlockCount ?? blocks.length;
-    if (count >= blocks.length) return blocks;
-    if (count <= 0) return const <MD$Block>[];
-    return blocks.sublist(0, count);
-  }
 
   /// Returns true if the markdown contains no blocks.
   bool get isEmpty => blocks.isEmpty;
