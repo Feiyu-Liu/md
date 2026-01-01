@@ -315,7 +315,15 @@ class MarkdownPainter {
 
   /// Opacity animations for each closed block.
   /// 每个已闭合块的透明度动画
-  List<Animation<double>> _opacityAnimations = [];
+  List<Animation<double>?> _opacityAnimations = [];
+
+  /// Offset animations for each closed block.
+  /// 每个已闭合块的位移动画
+  List<Animation<double>?> _offsetAnimations = [];
+
+  /// Blur animations for each closed block.
+  /// 每个已闭合块的模糊动画
+  List<Animation<double>?> _blurAnimations = [];
 
   /// Number of closed blocks from the last rebuild.
   /// 上次重建时的已闭合块数量
@@ -443,6 +451,8 @@ class MarkdownPainter {
       }
       _controllers = [];
       _opacityAnimations = [];
+      _offsetAnimations = [];
+      _blurAnimations = [];
       _blockPainters = rawPainters;
     }
 
@@ -482,7 +492,11 @@ class MarkdownPainter {
 
     // Keep old controllers that are still valid
     final oldControllers = List<AnimationController>.from(_controllers);
-    final oldAnimations = List<Animation<double>>.from(_opacityAnimations);
+    final oldOpacityAnimations =
+        List<Animation<double>?>.from(_opacityAnimations);
+    final oldOffsetAnimations =
+        List<Animation<double>?>.from(_offsetAnimations);
+    final oldBlurAnimations = List<Animation<double>?>.from(_blurAnimations);
 
     // Create new controllers list
     _controllers = List.generate(newCount, (i) {
@@ -492,26 +506,77 @@ class MarkdownPainter {
       } else {
         // Create new controller for newly closed block
         final controller = AnimationController(
-          duration: animationConfig.fadeInDuration,
+          duration: animationConfig.duration,
           vsync: _vsync!,
         );
         return controller;
       }
     });
 
-    // Create new animations list
+    // Create new animations lists
     _opacityAnimations = List.generate(newCount, (i) {
       if (i < oldCount) {
         // Reuse old animation
-        return oldAnimations[i];
+        return oldOpacityAnimations[i];
       } else {
-        // Create new animation
-        return Tween<double>(begin: 0.0, end: 1.0).animate(
-          CurvedAnimation(
-            parent: _controllers[i],
-            curve: animationConfig.curve,
-          ),
-        );
+        // Create new animation if opacity range is provided
+        final opacityRange = animationConfig.opacityRange;
+        if (opacityRange != null) {
+          return Tween<double>(
+            begin: opacityRange.start,
+            end: opacityRange.end,
+          ).animate(
+            CurvedAnimation(
+              parent: _controllers[i],
+              curve: animationConfig.curve,
+            ),
+          );
+        }
+        return null;
+      }
+    });
+
+    _offsetAnimations = List.generate(newCount, (i) {
+      if (i < oldCount) {
+        // Reuse old animation
+        return oldOffsetAnimations[i];
+      } else {
+        // Create new animation if offset range is provided
+        final offsetRange = animationConfig.offsetRange;
+        if (offsetRange != null) {
+          return Tween<double>(
+            begin: offsetRange.start,
+            end: offsetRange.end,
+          ).animate(
+            CurvedAnimation(
+              parent: _controllers[i],
+              curve: animationConfig.curve,
+            ),
+          );
+        }
+        return null;
+      }
+    });
+
+    _blurAnimations = List.generate(newCount, (i) {
+      if (i < oldCount) {
+        // Reuse old animation
+        return oldBlurAnimations[i];
+      } else {
+        // Create new animation if blur range is provided
+        final blurRange = animationConfig.blurRange;
+        if (blurRange != null) {
+          return Tween<double>(
+            begin: blurRange.start,
+            end: blurRange.end,
+          ).animate(
+            CurvedAnimation(
+              parent: _controllers[i],
+              curve: animationConfig.curve,
+            ),
+          );
+        }
+        return null;
       }
     });
 
@@ -520,6 +585,8 @@ class MarkdownPainter {
       return AnimatedBlockPainter(
         inner: rawPainters[i],
         opacityAnimation: _opacityAnimations[i],
+        offsetAnimation: _offsetAnimations[i],
+        blurAnimation: _blurAnimations[i],
       );
     });
 
@@ -862,6 +929,8 @@ class MarkdownPainter {
     }
     _controllers = [];
     _opacityAnimations = [];
+    _offsetAnimations = [];
+    _blurAnimations = [];
 
     for (final painter in _blockPainters) {
       painter.dispose();

@@ -408,8 +408,11 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
   // Animation configuration
   MarkdownAnimationConfig get _animationConfig => MarkdownAnimationConfig(
         enabled: _animationEnabled,
-        fadeInDuration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 300),
         curve: Curves.easeOut,
+        opacityRange: const AnimationRange(start: 0.0, end: 1.0),
+        offsetRange: const AnimationRange(start: 20.0, end: 0.0),
+        blurRange: const AnimationRange(start: 5.0, end: 0.0),
       );
 
   // Sample markdown content to stream
