@@ -15,6 +15,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
     this.theme,
     this.animationConfig = MarkdownAnimationConfig.disabled,
     this.isStreamingComplete,
+    this.onAnimationComplete,
     super.key, // ignore: unused_element
   });
 
@@ -35,6 +36,15 @@ class MarkdownWidget extends LeafRenderObjectWidget {
   /// 当流式输出完成时，所有 blocks（包括最后一个）都被视为已闭合。
   final ValueNotifier<bool>? isStreamingComplete;
 
+  /// Callback invoked when all animations have completed after streaming finishes.
+  /// 当流式完成后所有动画播放完成时调用的回调。
+  ///
+  /// This is only called when [animationConfig.disableOnComplete] is true.
+  /// Use this callback to update your state and disable animations for this message.
+  /// 仅当 [animationConfig.disableOnComplete] 为 true 时才会调用。
+  /// 使用此回调更新状态并禁用此消息的动画。
+  final VoidCallback? onAnimationComplete;
+
   @override
   RenderObject createRenderObject(BuildContext context) {
     final theme = this.theme ??
@@ -50,6 +60,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
       theme: theme,
       animationConfig: animationConfig,
       isStreamingComplete: isStreamingComplete,
+      onAnimationComplete: onAnimationComplete,
     );
   }
 
@@ -71,6 +82,7 @@ class MarkdownWidget extends LeafRenderObjectWidget {
       theme: theme,
       animationConfig: animationConfig,
       isStreamingComplete: isStreamingComplete,
+      onAnimationComplete: onAnimationComplete,
     );
   }
 }

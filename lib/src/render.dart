@@ -24,14 +24,20 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
+    VoidCallback? onAnimationComplete,
   })  : _animationConfig = animationConfig,
         _isStreamingComplete = isStreamingComplete,
+        _externalOnAnimationComplete = onAnimationComplete,
         _painter = MarkdownPainter(
           markdown: markdown,
           theme: theme,
           animationConfig: animationConfig,
           isStreamingComplete: isStreamingComplete,
         ) {
+    // Set the animation complete callback after construction
+    // 在构造后设置动画完成回调
+    _painter.onAnimationComplete = _handleAnimationComplete;
+
     // Listen to streaming complete changes
     _isStreamingComplete?.addListener(_handleStreamingCompleteChanged);
   }
@@ -48,6 +54,16 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   /// 流式输出是否完成的通知器
   ValueNotifier<bool>? _isStreamingComplete;
 
+  /// Whether animation has been disabled due to streaming completion.
+  /// This flag persists across widget rebuilds to prevent animation replay.
+  /// 动画是否因流式完成而被禁用。
+  /// 此标志在 widget 重建时保持不变，以防止动画重播。
+  bool _animationDisabledByCompletion = false;
+
+  /// External callback for animation completion.
+  /// 外部动画完成回调
+  VoidCallback? _externalOnAnimationComplete;
+
   /// Set of active tickers for animation.
   /// 用于动画的活动 Ticker 集合
   Set<Ticker>? _tickers;
@@ -58,6 +74,42 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     // When streaming complete state changes, request repaint
     // 当流式输出完成状态变化时，请求重绘
     markNeedsPaint();
+  }
+
+  /// Handles animation completion callback from the painter.
+  /// Disables animations to prevent them from replaying on widget rebuilds.
+  /// 处理来自绘制器的动画完成回调
+  /// 禁用动画以防止它们在 widget 重建时重播
+  void _handleAnimationComplete() {
+    if (_animationConfig.enabled && _animationConfig.disableOnComplete) {
+      // Mark that animation has been disabled due to completion
+      // 标记动画已因完成而被禁用
+      _animationDisabledByCompletion = true;
+
+      // Create a disabled version of the current config
+      // 创建当前配置的禁用版本
+      _animationConfig = MarkdownAnimationConfig(
+        enabled: false,
+        duration: _animationConfig.duration,
+        curve: _animationConfig.curve,
+        opacityRange: _animationConfig.opacityRange,
+        offsetRange: _animationConfig.offsetRange,
+        blurRange: _animationConfig.blurRange,
+        disableOnComplete: _animationConfig.disableOnComplete,
+      );
+
+      // Update the painter with the disabled config
+      // 使用禁用的配置更新绘制器
+      _painter.animationConfig = _animationConfig;
+
+      // Notify external listener (Widget layer) about animation completion
+      // 通知外部监听器（Widget 层）动画已完成
+      _externalOnAnimationComplete?.call();
+
+      // Request repaint to apply the change
+      // 请求重绘以应用更改
+      markNeedsPaint();
+    }
   }
 
   @override
@@ -175,7 +227,11 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
+    VoidCallback? onAnimationComplete,
   }) {
+    // Update external animation complete callback
+    // 更新外部动画完成回调
+    _externalOnAnimationComplete = onAnimationComplete;
     // Update streaming complete notifier
     if (_isStreamingComplete != isStreamingComplete) {
       _isStreamingComplete?.removeListener(_handleStreamingCompleteChanged);
@@ -183,11 +239,32 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
       _isStreamingComplete?.addListener(_handleStreamingCompleteChanged);
     }
 
-    _animationConfig = animationConfig;
+    // If animation was disabled due to completion, keep it disabled
+    // even if the widget passes enabled: true
+    // 如果动画因完成而被禁用，即使 widget 传入 enabled: true 也保持禁用
+    MarkdownAnimationConfig effectiveConfig = animationConfig;
+    if (_animationDisabledByCompletion && animationConfig.disableOnComplete) {
+      effectiveConfig = MarkdownAnimationConfig(
+        enabled: false,
+        duration: animationConfig.duration,
+        curve: animationConfig.curve,
+        opacityRange: animationConfig.opacityRange,
+        offsetRange: animationConfig.offsetRange,
+        blurRange: animationConfig.blurRange,
+        disableOnComplete: animationConfig.disableOnComplete,
+      );
+    }
+
+    _animationConfig = effectiveConfig;
+
+    // Update the painter callback to ensure it always points to the current method
+    // 更新绘制器回调以确保它始终指向当前方法
+    _painter.onAnimationComplete = _handleAnimationComplete;
+
     if (_painter.update(
       markdown: markdown,
       theme: theme,
-      animationConfig: animationConfig,
+      animationConfig: effectiveConfig,
       isStreamingComplete: isStreamingComplete,
     )) {
       // Mark the render object as needing layout.
@@ -268,6 +345,7 @@ class MarkdownPainter {
     required MarkdownThemeData theme,
     this.animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
+    this.onAnimationComplete,
   })  : _markdown = markdown,
         _theme = theme,
         _isStreamingComplete = isStreamingComplete,
@@ -275,6 +353,18 @@ class MarkdownPainter {
         _size = Size.zero {
     _rebuild();
   }
+
+  /// Callback invoked when animations should be disabled after streaming completes.
+  /// 当流式完成后应禁用动画时调用的回调
+  ///
+  /// This is called when:
+  /// - Streaming is complete (isStreamingComplete.value == true)
+  /// - The last block's animation has finished
+  /// - [animationConfig.disableOnComplete] is true
+  ///
+  /// The callback should update the animation config to disable animations,
+  /// preventing them from replaying on subsequent widget rebuilds.
+  VoidCallback? onAnimationComplete;
 
   /// Animation configuration.
   /// 动画配置
@@ -328,6 +418,14 @@ class MarkdownPainter {
   /// Number of closed blocks from the last rebuild.
   /// 上次重建时的已闭合块数量
   int _lastClosedCount = 0;
+
+  /// Whether streaming completion has been detected.
+  /// 是否已检测到流式完成
+  bool _streamingCompleteDetected = false;
+
+  /// Whether a completion listener has been added to the last animation.
+  /// 是否已为最后一个动画添加完成监听器
+  bool _lastAnimationCompletionListenerAdded = false;
 
   /// Whether there are active animations.
   /// 是否有活动的动画
@@ -490,6 +588,16 @@ class MarkdownPainter {
     final oldCount = _controllers.length;
     final newCount = rawPainters.length;
 
+    // Check if this is a rebuild of an already completed message
+    // If streaming is complete and we have no existing controllers,
+    // this means the RenderObject was recreated for an already completed message.
+    // In this case, we should NOT play animations.
+    // 检查这是否是已完成消息的重建
+    // 如果流式已完成且没有现有控制器，说明 RenderObject 是为已完成的消息重新创建的
+    // 在这种情况下，不应该播放动画
+    final isStreamingComplete = _isStreamingComplete?.value ?? false;
+    final isRebuildOfCompletedMessage = isStreamingComplete && oldCount == 0 && newCount > 0;
+
     // Keep old controllers that are still valid
     final oldControllers = List<AnimationController>.from(_controllers);
     final oldOpacityAnimations =
@@ -591,8 +699,21 @@ class MarkdownPainter {
     });
 
     // Start animations for newly closed blocks
-    for (var i = oldCount; i < newCount; i++) {
-      _controllers[i].forward();
+    // But skip if this is a rebuild of an already completed message
+    // 为新闭合的 blocks 启动动画
+    // 但如果这是已完成消息的重建，则跳过
+    if (isRebuildOfCompletedMessage) {
+      // For completed messages being rebuilt, set all controllers to completed state
+      // 对于正在重建的已完成消息，将所有控制器设置为完成状态
+      for (var i = 0; i < newCount; i++) {
+        _controllers[i].value = 1.0; // Set to end value without animation
+      }
+    } else {
+      // Normal case: start animations for newly closed blocks
+      // 正常情况：为新闭合的 blocks 启动动画
+      for (var i = oldCount; i < newCount; i++) {
+        _controllers[i].forward();
+      }
     }
 
     // Dispose excess old controllers
@@ -601,6 +722,72 @@ class MarkdownPainter {
     }
 
     _lastClosedCount = newCount;
+
+    // Handle streaming completion and auto-disable animation
+    // 处理流式完成和自动禁用动画
+    _handleStreamingCompletionAndAutoDisable();
+  }
+
+  /// Handles streaming completion detection and adds completion listener to last animation.
+  /// 处理流式完成检测并向最后一个动画添加完成监听器
+  void _handleStreamingCompletionAndAutoDisable() {
+    // Check if streaming is complete and disableOnComplete is enabled
+    // 检查流式是否完成且启用了 disableOnComplete
+    final isStreamingComplete = _isStreamingComplete?.value ?? false;
+    final shouldAutoDisable = animationConfig.disableOnComplete;
+
+    if (!shouldAutoDisable) {
+      // Reset tracking flags if auto-disable is not enabled
+      // 如果未启用自动禁用，重置跟踪标志
+      _streamingCompleteDetected = false;
+      _lastAnimationCompletionListenerAdded = false;
+      return;
+    }
+
+    // Detect transition to streaming complete state
+    // 检测到流式完成状态的转换
+    if (isStreamingComplete && !_streamingCompleteDetected) {
+      _streamingCompleteDetected = true;
+    }
+
+    // If streaming is complete and we haven't added a listener yet
+    // 如果流式完成且尚未添加监听器
+    if (_streamingCompleteDetected && !_lastAnimationCompletionListenerAdded) {
+      // Get the last controller (the final block's animation)
+      // 获取最后一个控制器（最终块的动画）
+      if (_controllers.isNotEmpty) {
+        final lastController = _controllers.last;
+
+        // Check if animation is already completed
+        // 检查动画是否已经完成
+        if (lastController.status == AnimationStatus.completed) {
+          // Animation already completed, notify immediately
+          // 动画已完成，立即通知
+          _lastAnimationCompletionListenerAdded = true;
+          if (onAnimationComplete != null) {
+            onAnimationComplete!();
+          }
+          return;
+        }
+
+        // Add status listener to detect animation completion
+        // 添加状态监听器以检测动画完成
+        void statusListener(AnimationStatus status) {
+          if (status == AnimationStatus.completed && onAnimationComplete != null) {
+            // Remove the listener to avoid multiple calls
+            // 移除监听器以避免多次调用
+            lastController.removeStatusListener(statusListener);
+
+            // Notify the render object to disable animations
+            // 通知渲染对象禁用动画
+            onAnimationComplete!();
+          }
+        }
+
+        lastController.addStatusListener(statusListener);
+        _lastAnimationCompletionListenerAdded = true;
+      }
+    }
   }
 
   /// Update the painter with new values.

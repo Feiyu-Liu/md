@@ -146,7 +146,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 tooltip: 'Streaming Demo',
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (context) => const StreamingDemoScreen(),
+                    builder: (context) => StreamingDemoScreen(
+                      content: _inputController.text,
+                    ),
                   ),
                 ),
               ),
@@ -388,7 +390,10 @@ This example is using `package:flutter_md/flutter_md.dart`.
 /// {@endtemplate}
 class StreamingDemoScreen extends StatefulWidget {
   /// {@macro streaming_demo_screen}
-  const StreamingDemoScreen({super.key});
+  const StreamingDemoScreen({super.key, required this.content});
+
+  /// The markdown content to stream.
+  final String content;
 
   @override
   State<StreamingDemoScreen> createState() => _StreamingDemoScreenState();
@@ -415,116 +420,8 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
         blurRange: const AnimationRange(start: 5.0, end: 0.0),
       );
 
-  // Sample markdown content to stream
-  static const String _streamingContent = '''
-# Markdown syntax guide
-
-## Headers
-
-# This is a Heading h1
-## This is a Heading h2
-### This is a Heading h3
-#### This is a Heading h4
-##### This is a Heading h5
-###### This is a Heading h6
-
----
-
-## Lists
-
-### Unordered
-
-* Item 1
-* Item 2
-* Item 2a
-* Item 2b
-    * Item 3a
-    * Item 3b
-
-### Ordered
-
-1. Item **1**
-2. Item **2**
-3. Item **3**
-    1. Item **3a** with [link](https://example.com)
-    2. Item **3b**
-
----
-
-## Emphasis
-
-*This text will be italic*
-_This will also be italic_
-
-**This text will be bold**
-
-__This will be underline__
-
-`This is inline code`
-
-~~This text will be strikethrough~~
-
-==This text will be highlighted==
-
-_`You` **can** __combine__ ~~them~~_
-
----
-
-## Paragraphs
-
-  **Lorem ipsum** dolor sit amet, consectetur adipiscing elit.
-Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
-Ut enim ad minim veniam, quis ~~nostrud exercitation~~ ullamco laboris nisi ut aliquip ex ea commodo consequat.
-Duis aute irure dolor in _reprehenderit in voluptate velit esse_ cillum dolore eu fugiat nulla pariatur.
-**Excepteur sint occaecat cupidatat non proident**, sunt in culpa qui __officia deserunt mollit__ anim id `est laborum`.
-
----
-
-
-## Links
-
-You may be using [Markdown Live Preview](https://markdownlivepreview.com/).
-
----
-
-## Blockquotes
-
-> Markdown is a lightweight markup language with plain-text-formatting syntax, created in 2004 by John Gruber with Aaron Swartz.
->
-> Markdown is often used to format readme files, for writing messages in online discussion forums, and to create rich text using a plain text editor.
-
----
-
-## Tables
-
-| Left columns  | Right columns |
-| ------------- |:-------------:|
-| left foo      | right foo     |
-| left bar      | right bar     |
-| left baz      | right baz     |
-
----
-
-## Blocks of code
-
-```
-let message = 'Hello world';
-alert(message);
-```
-
----
-
-## Inline code
-
-This example is using `package:flutter_md/flutter_md.dart`.
-
----
-
-## Special symbols
-
-> "Quotes" and 'single quotes' with 👉 <, >, &, ©, ®, ™, €, £, ¥, •, …, ±, §, ¶, †, ‡, ‰, µ, °
-
-''';
+  // Use the content passed from the main screen
+  String get _streamingContent => widget.content;
 
   @override
   void dispose() {

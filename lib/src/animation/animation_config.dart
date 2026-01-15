@@ -38,6 +38,10 @@ class AnimationRange {
 /// - [opacityRange]: Fade-in effect (opacity from start to end)
 /// - [offsetRange]: Vertical slide effect (offset in pixels, positive = down)
 /// - [blurRange]: Gaussian blur effect (blur sigma from start to end)
+///
+/// When [disableOnComplete] is true, animations will be automatically disabled
+/// after streaming completes and the final block finishes animating. This prevents
+/// animations from replaying on widget rebuilds (e.g., when scrolling).
 class MarkdownAnimationConfig {
   /// Creates a new animation configuration.
   const MarkdownAnimationConfig({
@@ -47,6 +51,7 @@ class MarkdownAnimationConfig {
     this.opacityRange,
     this.offsetRange,
     this.blurRange,
+    this.disableOnComplete = false,
   });
 
   /// Whether animation is enabled.
@@ -85,6 +90,20 @@ class MarkdownAnimationConfig {
   /// Example: `AnimationRange(start: 5.0, end: 0.0)` blurs from 5.0 to sharp.
   final AnimationRange? blurRange;
 
+  /// Whether to automatically disable animations after streaming completes.
+  ///
+  /// When true, after [isStreamingComplete] becomes true and the last block's
+  /// animation finishes, the animation config will be set to disabled internally.
+  /// This prevents animations from replaying on subsequent widget rebuilds.
+  ///
+  /// This is useful for preventing animation replays when:
+  /// - Scrolling through a message list
+  /// - Sending new messages
+  /// - Any other widget rebuild scenarios
+  ///
+  /// Default is false to maintain backward compatibility.
+  final bool disableOnComplete;
+
   /// Disabled animation configuration.
   /// All blocks are rendered immediately without animation.
   static const MarkdownAnimationConfig disabled = MarkdownAnimationConfig();
@@ -99,7 +118,8 @@ class MarkdownAnimationConfig {
           curve == other.curve &&
           opacityRange == other.opacityRange &&
           offsetRange == other.offsetRange &&
-          blurRange == other.blurRange;
+          blurRange == other.blurRange &&
+          disableOnComplete == other.disableOnComplete;
 
   @override
   int get hashCode => Object.hash(
@@ -109,6 +129,7 @@ class MarkdownAnimationConfig {
         opacityRange,
         offsetRange,
         blurRange,
+        disableOnComplete,
       );
 
   @override
@@ -118,5 +139,6 @@ class MarkdownAnimationConfig {
       'curve: $curve, '
       'opacityRange: $opacityRange, '
       'offsetRange: $offsetRange, '
-      'blurRange: $blurRange)';
+      'blurRange: $blurRange, '
+      'disableOnComplete: $disableOnComplete)';
 }
