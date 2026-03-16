@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
 
@@ -50,8 +51,20 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     this.codeLanguageStyle,
     this.codeBackgroundColor,
     this.codePadding = const EdgeInsets.all(8.0),
+    this.codeBorder,
+    this.codeBorderRadius,
+    this.codeTopSpacing = 0.0,
     MarkdownCodeTheme? codeTheme,
     this.codeHighlighter,
+    this.tableHeaderStyle,
+    this.tableHeaderBackgroundColor,
+    this.tableRowBackgroundColor,
+    this.tableAlternateRowBackgroundColor,
+    this.tableBorder,
+    this.tableBorderRadius,
+    this.tableCellPadding =
+        const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+    this.tableTopSpacing = 0.0,
     this.blockFilter,
     this.spanFilter,
     this.spanBuilder,
@@ -85,8 +98,19 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     TextStyle? codeLanguageStyle,
     Color? codeBackgroundColor,
     EdgeInsets? codePadding,
+    BorderSide? codeBorder,
+    BorderRadius? codeBorderRadius,
+    double? codeTopSpacing,
     MarkdownCodeTheme? codeTheme,
     MarkdownCodeHighlighter? codeHighlighter,
+    TextStyle? tableHeaderStyle,
+    Color? tableHeaderBackgroundColor,
+    Color? tableRowBackgroundColor,
+    Color? tableAlternateRowBackgroundColor,
+    BorderSide? tableBorder,
+    BorderRadius? tableBorderRadius,
+    EdgeInsets? tableCellPadding,
+    double? tableTopSpacing,
     bool Function(MD$Block block)? blockFilter,
     bool Function(MD$Span span)? spanFilter,
     InlineSpan? Function(
@@ -124,8 +148,20 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       codeLanguageStyle: codeLanguageStyle,
       codeBackgroundColor: codeBackgroundColor,
       codePadding: codePadding ?? const EdgeInsets.all(8.0),
+      codeBorder: codeBorder,
+      codeBorderRadius: codeBorderRadius,
+      codeTopSpacing: codeTopSpacing ?? 0.0,
       codeTheme: codeTheme,
       codeHighlighter: codeHighlighter,
+      tableHeaderStyle: tableHeaderStyle,
+      tableHeaderBackgroundColor: tableHeaderBackgroundColor,
+      tableRowBackgroundColor: tableRowBackgroundColor,
+      tableAlternateRowBackgroundColor: tableAlternateRowBackgroundColor,
+      tableBorder: tableBorder,
+      tableBorderRadius: tableBorderRadius,
+      tableCellPadding: tableCellPadding ??
+          const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+      tableTopSpacing: tableTopSpacing ?? 0.0,
       blockFilter: blockFilter,
       spanFilter: spanFilter,
       spanBuilder: spanBuilder,
@@ -194,11 +230,44 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
   /// Padding around fenced code blocks.
   final EdgeInsets codePadding;
 
+  /// Border for fenced code blocks.
+  final BorderSide? codeBorder;
+
+  /// Border radius for fenced code blocks.
+  final BorderRadius? codeBorderRadius;
+
+  /// External spacing above fenced code blocks.
+  final double codeTopSpacing;
+
   /// Token-to-style overrides for syntax-highlighted code blocks.
   final MarkdownCodeTheme? codeTheme;
 
   /// Custom syntax highlighter for fenced code blocks.
   final MarkdownCodeHighlighter? codeHighlighter;
+
+  /// Text style for table header cells.
+  final TextStyle? tableHeaderStyle;
+
+  /// Background color for the table header row.
+  final Color? tableHeaderBackgroundColor;
+
+  /// Background color for odd table data rows.
+  final Color? tableRowBackgroundColor;
+
+  /// Background color for even table data rows.
+  final Color? tableAlternateRowBackgroundColor;
+
+  /// Border for markdown tables.
+  final BorderSide? tableBorder;
+
+  /// Border radius for markdown tables.
+  final BorderRadius? tableBorderRadius;
+
+  /// Padding inside table cells.
+  final EdgeInsets tableCellPadding;
+
+  /// External spacing above markdown tables.
+  final double tableTopSpacing;
 
   /// A filter function to determine whether a block should be rendered.
   /// If the function returns `true`, the block will be rendered.
@@ -308,6 +377,16 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       surfaceColor ??
       const Color.fromARGB(255, 235, 235, 235);
 
+  /// Returns the resolved border for fenced code blocks.
+  BorderSide get resolvedCodeBorder => codeBorder ?? BorderSide.none;
+
+  /// Returns the resolved border radius for fenced code blocks.
+  BorderRadius get resolvedCodeBorderRadius =>
+      codeBorderRadius ??
+      BorderRadius.circular(
+        codePadding.left > codePadding.top ? codePadding.left : codePadding.top,
+      );
+
   /// Returns the resolved syntax theme for fenced code blocks.
   MarkdownCodeTheme get resolvedCodeTheme => <String, TextStyle>{
         ..._defaultCodeTheme(
@@ -351,6 +430,36 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
 
     return resolvedStyle;
   }
+
+  /// Returns the resolved text style for table header cells.
+  TextStyle get resolvedTableHeaderStyle =>
+      tableHeaderStyle ?? textStyle.copyWith(fontWeight: FontWeight.w700);
+
+  /// Returns the resolved background color for the table header row.
+  Color get resolvedTableHeaderBackgroundColor =>
+      tableHeaderBackgroundColor ?? Colors.transparent;
+
+  /// Returns the resolved background color for odd table data rows.
+  Color get resolvedTableRowBackgroundColor =>
+      tableRowBackgroundColor ?? Colors.transparent;
+
+  /// Returns the resolved background color for even table data rows.
+  Color get resolvedTableAlternateRowBackgroundColor =>
+      tableAlternateRowBackgroundColor ??
+      surfaceColor ??
+      const Color.fromARGB(255, 235, 235, 235);
+
+  /// Returns the resolved border for markdown tables.
+  BorderSide get resolvedTableBorder =>
+      tableBorder ??
+      BorderSide(
+        color: dividerColor ?? const Color(0x1F000000),
+        width: 1.0,
+      );
+
+  /// Returns the resolved border radius for markdown tables.
+  BorderRadius get resolvedTableBorderRadius =>
+      tableBorderRadius ?? BorderRadius.zero;
 
   /// Returns a [TextStyle] for the given [MD$Style].
   TextStyle textStyleFor(MD$Style style) => _textStyles.putIfAbsent(
@@ -406,8 +515,19 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     TextStyle? codeLanguageStyle,
     Color? codeBackgroundColor,
     EdgeInsets? codePadding,
+    BorderSide? codeBorder,
+    BorderRadius? codeBorderRadius,
+    double? codeTopSpacing,
     MarkdownCodeTheme? codeTheme,
     MarkdownCodeHighlighter? codeHighlighter,
+    TextStyle? tableHeaderStyle,
+    Color? tableHeaderBackgroundColor,
+    Color? tableRowBackgroundColor,
+    Color? tableAlternateRowBackgroundColor,
+    BorderSide? tableBorder,
+    BorderRadius? tableBorderRadius,
+    EdgeInsets? tableCellPadding,
+    double? tableTopSpacing,
     bool Function(MD$Block block)? blockFilter,
     bool Function(MD$Span span)? spanFilter,
     InlineSpan? Function(
@@ -440,8 +560,22 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
         codeLanguageStyle: codeLanguageStyle ?? this.codeLanguageStyle,
         codeBackgroundColor: codeBackgroundColor ?? this.codeBackgroundColor,
         codePadding: codePadding ?? this.codePadding,
+        codeBorder: codeBorder ?? this.codeBorder,
+        codeBorderRadius: codeBorderRadius ?? this.codeBorderRadius,
+        codeTopSpacing: codeTopSpacing ?? this.codeTopSpacing,
         codeTheme: codeTheme ?? this.codeTheme,
         codeHighlighter: codeHighlighter ?? this.codeHighlighter,
+        tableHeaderStyle: tableHeaderStyle ?? this.tableHeaderStyle,
+        tableHeaderBackgroundColor:
+            tableHeaderBackgroundColor ?? this.tableHeaderBackgroundColor,
+        tableRowBackgroundColor:
+            tableRowBackgroundColor ?? this.tableRowBackgroundColor,
+        tableAlternateRowBackgroundColor: tableAlternateRowBackgroundColor ??
+            this.tableAlternateRowBackgroundColor,
+        tableBorder: tableBorder ?? this.tableBorder,
+        tableBorderRadius: tableBorderRadius ?? this.tableBorderRadius,
+        tableCellPadding: tableCellPadding ?? this.tableCellPadding,
+        tableTopSpacing: tableTopSpacing ?? this.tableTopSpacing,
         blockFilter: blockFilter ?? this.blockFilter,
         spanFilter: spanFilter ?? this.spanFilter,
         spanBuilder: spanBuilder ?? this.spanBuilder,
@@ -495,8 +629,50 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       ),
       codePadding:
           EdgeInsets.lerp(codePadding, other?.codePadding, t) ?? codePadding,
+      codeBorder: _lerpBorderSide(codeBorder, other?.codeBorder, t),
+      codeBorderRadius: BorderRadius.lerp(
+        codeBorderRadius,
+        other?.codeBorderRadius,
+        t,
+      ),
+      codeTopSpacing: lerpDouble(codeTopSpacing, other?.codeTopSpacing, t) ??
+          codeTopSpacing,
       codeTheme: t < 0.5 ? codeTheme : other?.codeTheme,
       codeHighlighter: t < 0.5 ? codeHighlighter : other?.codeHighlighter,
+      tableHeaderStyle: TextStyle.lerp(
+        tableHeaderStyle,
+        other?.tableHeaderStyle,
+        t,
+      ),
+      tableHeaderBackgroundColor: Color.lerp(
+        tableHeaderBackgroundColor,
+        other?.tableHeaderBackgroundColor,
+        t,
+      ),
+      tableRowBackgroundColor: Color.lerp(
+        tableRowBackgroundColor,
+        other?.tableRowBackgroundColor,
+        t,
+      ),
+      tableAlternateRowBackgroundColor: Color.lerp(
+        tableAlternateRowBackgroundColor,
+        other?.tableAlternateRowBackgroundColor,
+        t,
+      ),
+      tableBorder: _lerpBorderSide(tableBorder, other?.tableBorder, t),
+      tableBorderRadius: BorderRadius.lerp(
+        tableBorderRadius,
+        other?.tableBorderRadius,
+        t,
+      ),
+      tableCellPadding: EdgeInsets.lerp(
+            tableCellPadding,
+            other?.tableCellPadding,
+            t,
+          ) ??
+          tableCellPadding,
+      tableTopSpacing: lerpDouble(tableTopSpacing, other?.tableTopSpacing, t) ??
+          tableTopSpacing,
       blockFilter: t < 0.5 ? blockFilter : other?.blockFilter,
       spanFilter: t < 0.5 ? spanFilter : other?.spanFilter,
       spanBuilder: t < 0.5 ? spanBuilder : other?.spanBuilder,
@@ -508,6 +684,9 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
   @override
   String toString() => 'MarkdownThemeData{}';
 }
+
+BorderSide _lerpBorderSide(BorderSide? a, BorderSide? b, double t) =>
+    BorderSide.lerp(a ?? BorderSide.none, b ?? BorderSide.none, t);
 
 MarkdownCodeTheme _defaultCodeTheme({
   required TextStyle baseStyle,

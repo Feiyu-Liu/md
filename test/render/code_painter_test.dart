@@ -81,6 +81,40 @@ void main() => group('BlockPainter\$Code', () {
           equals('json'),
         );
       });
+
+      test('includes configured top spacing in layout size', () {
+        theme = MarkdownThemeData(
+          textStyle: const TextStyle(
+            color: Colors.black,
+            fontSize: 14,
+          ),
+          codePadding: const EdgeInsets.all(10),
+          codeTopSpacing: 12,
+          codeBorderRadius: BorderRadius.circular(10),
+          codeBorder: const BorderSide(color: Colors.blueGrey),
+        );
+
+        final painter = BlockPainter$Code(
+          text: 'final answer = 42;',
+          language: null,
+          theme: theme,
+        );
+        addTearDown(painter.dispose);
+
+        final size = painter.layout(240);
+        final textPainter = TextPainter(
+          text: TextSpan(
+            text: 'final answer = 42;',
+            style:
+                theme.resolvedCodeStyle.merge(theme.resolvedCodeTheme['root']),
+          ),
+          textDirection: theme.textDirection,
+          textScaler: theme.textScaler,
+        )..layout(maxWidth: 220);
+        addTearDown(textPainter.dispose);
+
+        expect(size.height, closeTo(textPainter.height + 32, 0.001));
+      });
     });
 
 List<TextSpan> _textLeaves(InlineSpan span) {

@@ -1939,11 +1939,20 @@ class BlockPainter$Code implements BlockPainter {
     required this.theme,
     this.highlightSyntax = true,
   })  : _padding = theme.codePadding,
+        _topSpacing = theme.codeTopSpacing,
         _languageGap = 6.0,
+        _borderRadius = theme.resolvedCodeBorderRadius,
         _backgroundPaint = Paint()
           ..color = theme.resolvedCodeBackgroundColor
-          ..isAntiAlias = false
+          ..isAntiAlias = true
           ..style = PaintingStyle.fill,
+        _borderPaint = theme.resolvedCodeBorder == BorderSide.none
+            ? null
+            : (Paint()
+              ..color = theme.resolvedCodeBorder.color
+              ..isAntiAlias = true
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = theme.resolvedCodeBorder.width),
         painter = TextPainter(
           text: _buildCodeText(
             text: text,
@@ -2004,8 +2013,11 @@ class BlockPainter$Code implements BlockPainter {
   final MarkdownThemeData theme;
   final bool highlightSyntax;
   final EdgeInsets _padding;
+  final double _topSpacing;
   final double _languageGap;
+  final BorderRadius _borderRadius;
   final Paint _backgroundPaint;
+  final Paint? _borderPaint;
   final TextPainter painter;
   final TextPainter? languagePainter;
 
@@ -2047,7 +2059,7 @@ class BlockPainter$Code implements BlockPainter {
 
     return _size = Size(
       math.max(labelWidth, painter.size.width) + _padding.horizontal,
-      labelHeight + gap + painter.size.height + _padding.vertical,
+      labelHeight + gap + painter.size.height + _padding.vertical + _topSpacing,
     );
   }
 
@@ -2057,16 +2069,20 @@ class BlockPainter$Code implements BlockPainter {
     // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
 
-    final radius = Radius.circular(math.max(_padding.left, _padding.top));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(0, offset, size.width, _size.height),
-        radius,
-      ),
-      _backgroundPaint,
+    final blockRect = Rect.fromLTWH(
+      0,
+      offset + _topSpacing,
+      size.width,
+      _size.height - _topSpacing,
     );
+    final blockRRect = _borderRadius.toRRect(blockRect);
 
-    var currentY = offset + _padding.top;
+    canvas.drawRRect(blockRRect, _backgroundPaint);
+    if (_borderPaint != null) {
+      canvas.drawRRect(blockRRect, _borderPaint!);
+    }
+
+    var currentY = offset + _topSpacing + _padding.top;
 
     if (languagePainter != null) {
       languagePainter!.paint(
@@ -2103,20 +2119,26 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   })  : columns = header.cells.length,
         _columnWidths = List<double>.filled(header.cells.length, 0.0),
         _rowHeights = List<double>.filled(rows.length + 1, 0.0),
+        _cellPadding = theme.tableCellPadding,
+        _topSpacing = theme.tableTopSpacing,
+        _borderRadius = theme.resolvedTableBorderRadius,
         _borderPaint = Paint()
-          ..color = theme.dividerColor ?? const Color(0x1F000000)
+          ..color = theme.resolvedTableBorder.color
           ..style = PaintingStyle.stroke
-          ..isAntiAlias = false
-          ..strokeWidth = 1.0,
+          ..isAntiAlias = true
+          ..strokeWidth = theme.resolvedTableBorder.width,
+        _headerBackgroundPaint = Paint()
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = true
+          ..color = theme.resolvedTableHeaderBackgroundColor,
         _rowBackgroundPaint = Paint()
           ..style = PaintingStyle.fill
-          ..isAntiAlias = false
-          ..color =
-              theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
-
-  /// Padding for table cells.
-  /// 表格单元格的内边距
-  static const double padding = 8.0;
+          ..isAntiAlias = true
+          ..color = theme.resolvedTableRowBackgroundColor,
+        _alternateRowBackgroundPaint = Paint()
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = true
+          ..color = theme.resolvedTableAlternateRowBackgroundColor;
 
   /// The theme for the markdown table.
   /// Markdown 表格的主题
@@ -2128,8 +2150,13 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
   final List<double> _columnWidths;
   final List<double> _rowHeights;
+  final EdgeInsets _cellPadding;
+  final double _topSpacing;
+  final BorderRadius _borderRadius;
   final Paint _borderPaint;
+  final Paint _headerBackgroundPaint;
   final Paint _rowBackgroundPaint;
+  final Paint _alternateRowBackgroundPaint;
 
   Float32List? _borderPoints;
 
@@ -2181,7 +2208,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final rowHeights =
         List.generate(_cellPainters.length, (r) => _rowHeights[r]);
 
-    double currentY = 0.0;
+    double currentY = _topSpacing;
 
     for (int r = 0; r < _cellPainters.length; r++) {
       final rowHeight = rowHeights[r];
@@ -2202,8 +2229,9 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
             // In this cell.
             // 在此单元格中
             final verticalPadding = (rowHeight - painter.height) / 2;
-            final horizontalPadding =
-                (r == 0) ? (columnWidth - painter.width) / 2 : padding;
+            final horizontalPadding = (r == 0)
+                ? (columnWidth - painter.width) / 2
+                : _cellPadding.left;
 
             final painterOffset = Offset(
                 currentX + horizontalPadding, currentY + verticalPadding);
@@ -2260,9 +2288,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           return TextPainter(textDirection: theme.textDirection);
         }
         final cell = row.cells[c];
-        final style = (r == 0)
-            ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
-            : null;
+        final style = (r == 0) ? theme.resolvedTableHeaderStyle : null;
         final textPainter = TextPainter(
           text: _paragraphFromMarkdownSpans(
               spans: cell, theme: theme, textStyle: style),
@@ -2274,8 +2300,8 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         // Calculate natural width
         // 计算自然宽度
         textPainter.layout(maxWidth: double.infinity);
-        naturalWidths[c] =
-            math.max(naturalWidths[c], textPainter.width + padding * 2);
+        naturalWidths[c] = math.max(
+            naturalWidths[c], textPainter.width + _cellPadding.horizontal);
 
         // Calculate min width (longest word)
         // 计算最小宽度（最长单词）
@@ -2287,9 +2313,12 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           final wordPainter = TextPainter(
             text: TextSpan(text: longestWord, style: style),
             textDirection: theme.textDirection,
+            textScaler: theme.textScaler,
           )..layout();
-          minWidths[c] =
-              math.max(minWidths[c], wordPainter.width + padding * 2);
+          minWidths[c] = math.max(
+            minWidths[c],
+            wordPainter.width + _cellPadding.horizontal,
+          );
           wordPainter.dispose();
         }
 
@@ -2310,14 +2339,16 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
       for (int c = 0; c < columns; c++) {
         final painter = _cellPainters[r][c];
         if (painter.text == null) continue;
-        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
+        painter.layout(
+          maxWidth: math.max(0.0, _columnWidths[c] - _cellPadding.horizontal),
+        );
         rowHeight = math.max(
           rowHeight,
           painter.height,
         );
       }
 
-      _rowHeights[r] = rowHeight + padding * 2;
+      _rowHeights[r] = rowHeight + _cellPadding.vertical;
       totalHeight += _rowHeights[r];
     }
 
@@ -2347,7 +2378,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     }
     _borderPoints = points;
 
-    return _size = Size(totalWidth, totalHeight);
+    return _size = Size(totalWidth, totalHeight + _topSpacing);
   }
 
   @override
@@ -2356,19 +2387,34 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     // 如果宽度小于所需宽度，则不绘制任何内容
     if (columns < 1) return;
 
-    double currentY = offset;
+    final tableHeight = _size.height - _topSpacing;
+    if (tableHeight <= 0.0) return;
+
+    final tableOffset = offset + _topSpacing;
+    final tableRect = Rect.fromLTWH(0, tableOffset, _size.width, tableHeight);
+    final tableRRect = _borderRadius.toRRect(tableRect);
+
+    double currentY = tableOffset;
     final rowHeights =
         List.generate(_cellPainters.length, (r) => _rowHeights[r]);
+
+    canvas.save();
+    canvas.clipRRect(tableRRect);
 
     for (int r = 0; r < _cellPainters.length; r++) {
       double currentX = 0;
 
-      // Draw background for even data rows.
-      // 为偶数数据行绘制背景
-      if (r % 2 == 0 && r != 0) {
+      if (r == 0 && _headerBackgroundPaint.color.alpha != 0) {
         canvas.drawRect(
           Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
-          _rowBackgroundPaint,
+          _headerBackgroundPaint,
+        );
+      } else if (r != 0) {
+        final rowPaint =
+            (r - 1).isEven ? _rowBackgroundPaint : _alternateRowBackgroundPaint;
+        canvas.drawRect(
+          Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
+          rowPaint,
         );
       }
 
@@ -2383,7 +2429,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         final horizontalPadding = (r == 0)
             ? (_columnWidths[c] - painter.width) / 2 // Center for header rows
             // 标题行居中
-            : padding; // Left align for data rows
+            : _cellPadding.left; // Left align for data rows
         // 数据行左对齐
 
         painter.paint(
@@ -2402,22 +2448,18 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     // 绘制内部边框
     if (_borderPoints != null) {
       canvas.save();
-      canvas.translate(0, offset);
+      canvas.translate(0, tableOffset);
       canvas.drawRawPoints(PointMode.lines, _borderPoints!, _borderPaint);
       canvas.restore();
     }
 
+    canvas.restore();
+
     // Draw outer borders
     // 绘制外部边框
-    canvas.drawRect(
-      Rect.fromLTRB(
-        0,
-        offset,
-        _size.width,
-        offset + _size.height,
-      ),
-      _borderPaint,
-    );
+    if (_borderPaint.color.alpha != 0 && _borderPaint.strokeWidth > 0) {
+      canvas.drawRRect(tableRRect, _borderPaint);
+    }
   }
 
   @override
