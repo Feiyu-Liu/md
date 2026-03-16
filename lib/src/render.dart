@@ -2288,7 +2288,9 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           return TextPainter(textDirection: theme.textDirection);
         }
         final cell = row.cells[c];
-        final style = (r == 0) ? theme.resolvedTableHeaderStyle : null;
+        final style = (r == 0)
+            ? theme.resolvedTableHeaderStyle
+            : theme.resolvedTableTextStyle;
         final textPainter = TextPainter(
           text: _paragraphFromMarkdownSpans(
               spans: cell, theme: theme, textStyle: style),

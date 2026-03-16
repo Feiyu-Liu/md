@@ -56,6 +56,7 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     this.codeTopSpacing = 0.0,
     MarkdownCodeTheme? codeTheme,
     this.codeHighlighter,
+    this.tableTextStyle,
     this.tableHeaderStyle,
     this.tableHeaderBackgroundColor,
     this.tableRowBackgroundColor,
@@ -103,6 +104,7 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     double? codeTopSpacing,
     MarkdownCodeTheme? codeTheme,
     MarkdownCodeHighlighter? codeHighlighter,
+    TextStyle? tableTextStyle,
     TextStyle? tableHeaderStyle,
     Color? tableHeaderBackgroundColor,
     Color? tableRowBackgroundColor,
@@ -153,6 +155,7 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       codeTopSpacing: codeTopSpacing ?? 0.0,
       codeTheme: codeTheme,
       codeHighlighter: codeHighlighter,
+      tableTextStyle: tableTextStyle,
       tableHeaderStyle: tableHeaderStyle,
       tableHeaderBackgroundColor: tableHeaderBackgroundColor,
       tableRowBackgroundColor: tableRowBackgroundColor,
@@ -244,6 +247,9 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
 
   /// Custom syntax highlighter for fenced code blocks.
   final MarkdownCodeHighlighter? codeHighlighter;
+
+  /// Text style for table body cells.
+  final TextStyle? tableTextStyle;
 
   /// Text style for table header cells.
   final TextStyle? tableHeaderStyle;
@@ -432,8 +438,12 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
   }
 
   /// Returns the resolved text style for table header cells.
+  TextStyle get resolvedTableTextStyle => tableTextStyle ?? textStyle;
+
+  /// Returns the resolved text style for table header cells.
   TextStyle get resolvedTableHeaderStyle =>
-      tableHeaderStyle ?? textStyle.copyWith(fontWeight: FontWeight.w700);
+      tableHeaderStyle ??
+      resolvedTableTextStyle.copyWith(fontWeight: FontWeight.w700);
 
   /// Returns the resolved background color for the table header row.
   Color get resolvedTableHeaderBackgroundColor =>
@@ -520,6 +530,7 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     double? codeTopSpacing,
     MarkdownCodeTheme? codeTheme,
     MarkdownCodeHighlighter? codeHighlighter,
+    TextStyle? tableTextStyle,
     TextStyle? tableHeaderStyle,
     Color? tableHeaderBackgroundColor,
     Color? tableRowBackgroundColor,
@@ -565,6 +576,7 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
         codeTopSpacing: codeTopSpacing ?? this.codeTopSpacing,
         codeTheme: codeTheme ?? this.codeTheme,
         codeHighlighter: codeHighlighter ?? this.codeHighlighter,
+        tableTextStyle: tableTextStyle ?? this.tableTextStyle,
         tableHeaderStyle: tableHeaderStyle ?? this.tableHeaderStyle,
         tableHeaderBackgroundColor:
             tableHeaderBackgroundColor ?? this.tableHeaderBackgroundColor,
@@ -639,6 +651,11 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
           codeTopSpacing,
       codeTheme: t < 0.5 ? codeTheme : other?.codeTheme,
       codeHighlighter: t < 0.5 ? codeHighlighter : other?.codeHighlighter,
+      tableTextStyle: TextStyle.lerp(
+        tableTextStyle,
+        other?.tableTextStyle,
+        t,
+      ),
       tableHeaderStyle: TextStyle.lerp(
         tableHeaderStyle,
         other?.tableHeaderStyle,

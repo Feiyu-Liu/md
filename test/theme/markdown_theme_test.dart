@@ -14,6 +14,10 @@ void main() => group('MarkdownThemeData', () {
       const codeBorder = BorderSide(color: Colors.blueGrey);
       const codeBorderRadius = BorderRadius.all(Radius.circular(10));
       const keywordStyle = TextStyle(color: Colors.red);
+      const tableTextStyle = TextStyle(
+        fontSize: 12,
+        color: Colors.black87,
+      );
       const tableHeaderStyle = TextStyle(
         fontSize: 13,
         fontWeight: FontWeight.w600,
@@ -35,6 +39,7 @@ void main() => group('MarkdownThemeData', () {
             'keyword': keywordStyle,
           },
           codeHighlighter: const _FakeCodeHighlighter(),
+          tableTextStyle: tableTextStyle,
           tableHeaderStyle: tableHeaderStyle,
           tableHeaderBackgroundColor: Colors.amber,
           tableRowBackgroundColor: Colors.white,
@@ -57,6 +62,7 @@ void main() => group('MarkdownThemeData', () {
         expect(data.codeTopSpacing, 14);
         expect(data.codeTheme?['keyword'], equals(keywordStyle));
         expect(data.codeHighlighter, isA<_FakeCodeHighlighter>());
+        expect(data.tableTextStyle, equals(tableTextStyle));
         expect(data.tableHeaderStyle, equals(tableHeaderStyle));
         expect(data.tableHeaderBackgroundColor, equals(Colors.amber));
         expect(data.tableRowBackgroundColor, equals(Colors.white));
@@ -87,6 +93,7 @@ void main() => group('MarkdownThemeData', () {
             'keyword': keywordStyle,
           },
           codeHighlighter: const _FakeCodeHighlighter(),
+          tableTextStyle: tableTextStyle,
           tableHeaderStyle: tableHeaderStyle,
           tableHeaderBackgroundColor: Colors.amber,
           tableRowBackgroundColor: Colors.white,
@@ -109,6 +116,7 @@ void main() => group('MarkdownThemeData', () {
         expect(updated.codeTopSpacing, 14);
         expect(updated.codeTheme?['keyword'], equals(keywordStyle));
         expect(updated.codeHighlighter, isA<_FakeCodeHighlighter>());
+        expect(updated.tableTextStyle, equals(tableTextStyle));
         expect(updated.tableHeaderStyle, equals(tableHeaderStyle));
         expect(updated.tableHeaderBackgroundColor, equals(Colors.amber));
         expect(updated.tableRowBackgroundColor, equals(Colors.white));
@@ -139,6 +147,7 @@ void main() => group('MarkdownThemeData', () {
             'keyword': keywordStyle,
           },
           codeHighlighter: const _FakeCodeHighlighter(),
+          tableTextStyle: tableTextStyle,
           tableHeaderStyle: tableHeaderStyle,
           tableHeaderBackgroundColor: Colors.amber,
           tableRowBackgroundColor: Colors.white,
@@ -163,6 +172,7 @@ void main() => group('MarkdownThemeData', () {
         expect(lerped.codeTopSpacing, 14);
         expect(lerped.codeTheme?['keyword'], equals(keywordStyle));
         expect(lerped.codeHighlighter, isA<_FakeCodeHighlighter>());
+        expect(lerped.tableTextStyle, equals(tableTextStyle));
         expect(lerped.tableHeaderStyle, equals(tableHeaderStyle));
         expect(
           lerped.tableHeaderBackgroundColor,
