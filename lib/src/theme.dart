@@ -4,6 +4,26 @@ import 'package:flutter/material.dart';
 
 import '../flutter_md.dart';
 
+/// Token-to-style overrides for fenced code blocks.
+///
+/// Keys should match syntax token class names produced by the `highlight`
+/// package, such as `keyword`, `string`, or `title`.
+typedef MarkdownCodeTheme = Map<String, TextStyle>;
+
+/// Builds a syntax-highlighted [TextSpan] tree for fenced code blocks.
+abstract interface class MarkdownCodeHighlighter {
+  /// Creates a syntax-highlighted [TextSpan] tree.
+  const MarkdownCodeHighlighter();
+
+  /// Returns a syntax-highlighted span tree for [text].
+  TextSpan build({
+    required String text,
+    required String? language,
+    required TextStyle textStyle,
+    required MarkdownThemeData theme,
+  });
+}
+
 /// {@template markdown_theme_data}
 /// Theme data for Markdown widgets.
 /// {@endtemplate}
@@ -26,11 +46,21 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     this.highlightBackgroundColor = const Color(0x40FF5722),
     this.monospaceBackgroundColor = const Color(0x409E9E9E),
     this.dividerColor,
+    this.codeStyle,
+    this.codeLanguageStyle,
+    this.codeBackgroundColor,
+    this.codePadding = const EdgeInsets.all(8.0),
+    MarkdownCodeTheme? codeTheme,
+    this.codeHighlighter,
     this.blockFilter,
     this.spanFilter,
+    this.spanBuilder,
     this.builder,
     this.onLinkTap,
-  })  : _headingStyles = List<TextStyle?>.filled(8, null),
+  })  : codeTheme = codeTheme == null
+            ? null
+            : Map<String, TextStyle>.unmodifiable(codeTheme),
+        _headingStyles = List<TextStyle?>.filled(8, null),
         _textStyles = HashMap<int, TextStyle>();
 
   /// Creates a [MarkdownThemeData] from the given [ThemeData].
@@ -51,8 +81,19 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     Color? highlightBackgroundColor,
     Color? monospaceBackgroundColor,
     Color? dividerColor,
+    TextStyle? codeStyle,
+    TextStyle? codeLanguageStyle,
+    Color? codeBackgroundColor,
+    EdgeInsets? codePadding,
+    MarkdownCodeTheme? codeTheme,
+    MarkdownCodeHighlighter? codeHighlighter,
     bool Function(MD$Block block)? blockFilter,
     bool Function(MD$Span span)? spanFilter,
+    InlineSpan? Function(
+      MD$Span span,
+      TextStyle textStyle,
+      MarkdownThemeData theme,
+    )? spanBuilder,
     BlockPainter? Function(MD$Block block, MarkdownThemeData theme)? builder,
     void Function(String title, String url)? onLinkTap,
   }) {
@@ -70,8 +111,8 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       h6Style: h6Style ?? theme.textTheme.titleSmall,
       quoteStyle: quoteStyle ??
           theme.textTheme.bodyMedium?.copyWith(
-              color:
-                  theme.textTheme.bodyMedium?.color?.withValues(alpha: 0.75)),
+            color: theme.textTheme.bodyMedium?.color?.withValues(alpha: 0.75),
+          ),
       linkColor: linkColor ?? theme.colorScheme.primary,
       surfaceColor: surfaceColor ?? theme.colorScheme.surfaceContainerHigh,
       highlightBackgroundColor:
@@ -79,8 +120,15 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       monospaceBackgroundColor:
           monospaceBackgroundColor ?? theme.colorScheme.surfaceContainerHigh,
       dividerColor: dividerColor ?? theme.dividerColor.withValues(alpha: 0.12),
+      codeStyle: codeStyle,
+      codeLanguageStyle: codeLanguageStyle,
+      codeBackgroundColor: codeBackgroundColor,
+      codePadding: codePadding ?? const EdgeInsets.all(8.0),
+      codeTheme: codeTheme,
+      codeHighlighter: codeHighlighter,
       blockFilter: blockFilter,
       spanFilter: spanFilter,
+      spanBuilder: spanBuilder,
       builder: builder,
       onLinkTap: onLinkTap,
     );
@@ -134,6 +182,24 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
   /// The color to use for the divider.
   final Color? dividerColor;
 
+  /// Base text style for fenced code blocks.
+  final TextStyle? codeStyle;
+
+  /// Text style for the optional language label above a code block.
+  final TextStyle? codeLanguageStyle;
+
+  /// Background color for fenced code blocks.
+  final Color? codeBackgroundColor;
+
+  /// Padding around fenced code blocks.
+  final EdgeInsets codePadding;
+
+  /// Token-to-style overrides for syntax-highlighted code blocks.
+  final MarkdownCodeTheme? codeTheme;
+
+  /// Custom syntax highlighter for fenced code blocks.
+  final MarkdownCodeHighlighter? codeHighlighter;
+
   /// A filter function to determine whether a block should be rendered.
   /// If the function returns `true`, the block will be rendered.
   ///
@@ -148,6 +214,16 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
   /// relevant to the current context, such as links or images.
   /// This can be useful for customizing the rendering of Markdown spans.
   final bool Function(MD$Span span)? spanFilter;
+
+  /// A custom inline span builder function.
+  /// It receives the current [MD$Span], the resolved [TextStyle],
+  /// and the active [MarkdownThemeData].
+  /// If it returns `null`, the default text span will be used.
+  final InlineSpan? Function(
+    MD$Span span,
+    TextStyle textStyle,
+    MarkdownThemeData theme,
+  )? spanBuilder;
 
   /// A custom block painter builder function.
   /// It receives a [MD$Block] and returns a [BlockPainter].
@@ -206,6 +282,76 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
 
   final HashMap<int, TextStyle> _textStyles;
 
+  /// Returns the resolved base style for fenced code blocks.
+  TextStyle get resolvedCodeStyle =>
+      codeStyle ??
+      textStyle.copyWith(
+        fontFamily: 'monospace',
+        fontSize: textStyle.fontSize ?? kDefaultFontSize,
+        height: 1.45,
+      );
+
+  /// Returns the resolved style for the optional code language label.
+  TextStyle get resolvedCodeLanguageStyle =>
+      codeLanguageStyle ??
+      resolvedCodeStyle.copyWith(
+        fontSize: (((resolvedCodeStyle.fontSize ?? kDefaultFontSize) - 2.0)
+                .clamp(10.0, double.infinity))
+            .toDouble(),
+        fontWeight: FontWeight.w600,
+        color: resolvedCodeStyle.color?.withValues(alpha: 0.72),
+      );
+
+  /// Returns the resolved background color for fenced code blocks.
+  Color get resolvedCodeBackgroundColor =>
+      codeBackgroundColor ??
+      surfaceColor ??
+      const Color.fromARGB(255, 235, 235, 235);
+
+  /// Returns the resolved syntax theme for fenced code blocks.
+  MarkdownCodeTheme get resolvedCodeTheme => <String, TextStyle>{
+        ..._defaultCodeTheme(
+          baseStyle: resolvedCodeStyle,
+          textColor: textStyle.color,
+          accentColor: linkColor,
+          backgroundColor: resolvedCodeBackgroundColor,
+        ),
+        ...?codeTheme,
+      };
+
+  /// Returns a [TextStyle] for the given syntax [tokenClass].
+  TextStyle codeTextStyleFor(
+    String? tokenClass, {
+    TextStyle? baseStyle,
+  }) {
+    final resolvedTheme = resolvedCodeTheme;
+    var resolvedStyle = baseStyle ?? resolvedCodeStyle;
+
+    if (baseStyle == null) {
+      resolvedStyle = resolvedStyle.merge(resolvedTheme['root']);
+    }
+
+    if (tokenClass == null || tokenClass.trim().isEmpty) {
+      return resolvedStyle;
+    }
+
+    final seen = <String>{};
+
+    void mergeToken(String token) {
+      if (!seen.add(token)) return;
+      resolvedStyle = resolvedStyle.merge(resolvedTheme[token]);
+    }
+
+    mergeToken(tokenClass);
+
+    for (final token in tokenClass.split(RegExp(r'[\s.]+'))) {
+      if (token.isEmpty) continue;
+      mergeToken(token);
+    }
+
+    return resolvedStyle;
+  }
+
   /// Returns a [TextStyle] for the given [MD$Style].
   TextStyle textStyleFor(MD$Style style) => _textStyles.putIfAbsent(
         style.hashCode,
@@ -256,8 +402,21 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
     Color? highlightBackgroundColor,
     Color? monospaceBackgroundColor,
     Color? dividerColor,
+    TextStyle? codeStyle,
+    TextStyle? codeLanguageStyle,
+    Color? codeBackgroundColor,
+    EdgeInsets? codePadding,
+    MarkdownCodeTheme? codeTheme,
+    MarkdownCodeHighlighter? codeHighlighter,
     bool Function(MD$Block block)? blockFilter,
     bool Function(MD$Span span)? spanFilter,
+    InlineSpan? Function(
+      MD$Span span,
+      TextStyle textStyle,
+      MarkdownThemeData theme,
+    )? spanBuilder,
+    BlockPainter? Function(MD$Block block, MarkdownThemeData theme)? builder,
+    void Function(String title, String url)? onLinkTap,
   }) =>
       MarkdownThemeData(
         textDirection: textDirection ?? this.textDirection,
@@ -277,8 +436,17 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
         monospaceBackgroundColor:
             monospaceBackgroundColor ?? this.monospaceBackgroundColor,
         dividerColor: dividerColor ?? this.dividerColor,
+        codeStyle: codeStyle ?? this.codeStyle,
+        codeLanguageStyle: codeLanguageStyle ?? this.codeLanguageStyle,
+        codeBackgroundColor: codeBackgroundColor ?? this.codeBackgroundColor,
+        codePadding: codePadding ?? this.codePadding,
+        codeTheme: codeTheme ?? this.codeTheme,
+        codeHighlighter: codeHighlighter ?? this.codeHighlighter,
         blockFilter: blockFilter ?? this.blockFilter,
         spanFilter: spanFilter ?? this.spanFilter,
+        spanBuilder: spanBuilder ?? this.spanBuilder,
+        builder: builder ?? this.builder,
+        onLinkTap: onLinkTap ?? this.onLinkTap,
       );
 
   @override
@@ -304,12 +472,34 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
       linkColor: Color.lerp(linkColor, other?.linkColor, t),
       surfaceColor: Color.lerp(surfaceColor, other?.surfaceColor, t),
       highlightBackgroundColor: Color.lerp(
-          highlightBackgroundColor, other?.highlightBackgroundColor, t),
+        highlightBackgroundColor,
+        other?.highlightBackgroundColor,
+        t,
+      ),
       monospaceBackgroundColor: Color.lerp(
-          monospaceBackgroundColor, other?.monospaceBackgroundColor, t),
+        monospaceBackgroundColor,
+        other?.monospaceBackgroundColor,
+        t,
+      ),
       dividerColor: Color.lerp(dividerColor, other?.dividerColor, t),
+      codeStyle: TextStyle.lerp(codeStyle, other?.codeStyle, t),
+      codeLanguageStyle: TextStyle.lerp(
+        codeLanguageStyle,
+        other?.codeLanguageStyle,
+        t,
+      ),
+      codeBackgroundColor: Color.lerp(
+        codeBackgroundColor,
+        other?.codeBackgroundColor,
+        t,
+      ),
+      codePadding:
+          EdgeInsets.lerp(codePadding, other?.codePadding, t) ?? codePadding,
+      codeTheme: t < 0.5 ? codeTheme : other?.codeTheme,
+      codeHighlighter: t < 0.5 ? codeHighlighter : other?.codeHighlighter,
       blockFilter: t < 0.5 ? blockFilter : other?.blockFilter,
       spanFilter: t < 0.5 ? spanFilter : other?.spanFilter,
+      spanBuilder: t < 0.5 ? spanBuilder : other?.spanBuilder,
       builder: t < 0.5 ? builder : other?.builder,
       onLinkTap: t < 0.5 ? onLinkTap : other?.onLinkTap,
     );
@@ -317,6 +507,96 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
 
   @override
   String toString() => 'MarkdownThemeData{}';
+}
+
+MarkdownCodeTheme _defaultCodeTheme({
+  required TextStyle baseStyle,
+  required Color? textColor,
+  required Color? accentColor,
+  required Color backgroundColor,
+}) {
+  final baseColor = textColor ?? baseStyle.color ?? const Color(0xFF222222);
+  final accent = accentColor ?? const Color(0xFF3366CC);
+  final warm = Color.lerp(accent, const Color(0xFFD73A49), 0.72)!;
+  final cool = Color.lerp(accent, const Color(0xFF005CC5), 0.58)!;
+  final mint = Color.lerp(accent, const Color(0xFF22863A), 0.74)!;
+  final amber = Color.lerp(accent, const Color(0xFFE36209), 0.78)!;
+  final violet = Color.lerp(accent, const Color(0xFF6F42C1), 0.74)!;
+  final muted = Color.lerp(baseColor, backgroundColor, 0.44)!;
+
+  return <String, TextStyle>{
+    'root': TextStyle(
+      color: baseColor,
+      backgroundColor: backgroundColor,
+    ),
+    'comment': TextStyle(
+      color: muted,
+      fontStyle: FontStyle.italic,
+    ),
+    'quote': TextStyle(
+      color: muted,
+      fontStyle: FontStyle.italic,
+    ),
+    'keyword': TextStyle(
+      color: warm,
+      fontWeight: FontWeight.w700,
+    ),
+    'selector-tag': TextStyle(
+      color: warm,
+      fontWeight: FontWeight.w700,
+    ),
+    'subst': TextStyle(color: baseColor),
+    'number': TextStyle(color: cool),
+    'literal': TextStyle(color: cool),
+    'variable': TextStyle(color: cool),
+    'template-variable': TextStyle(color: cool),
+    'string': TextStyle(color: mint),
+    'doctag': TextStyle(color: mint),
+    'regexp': TextStyle(color: mint),
+    'link': TextStyle(color: mint),
+    'title': TextStyle(
+      color: violet,
+      fontWeight: FontWeight.w700,
+    ),
+    'section': TextStyle(
+      color: violet,
+      fontWeight: FontWeight.w700,
+    ),
+    'selector-id': TextStyle(
+      color: violet,
+      fontWeight: FontWeight.w700,
+    ),
+    'type': TextStyle(
+      color: amber,
+      fontWeight: FontWeight.w700,
+    ),
+    'tag': TextStyle(color: warm),
+    'name': TextStyle(color: warm),
+    'attribute': TextStyle(color: amber),
+    'attr': TextStyle(color: amber),
+    'symbol': TextStyle(color: violet),
+    'bullet': TextStyle(color: violet),
+    'built_in': TextStyle(color: cool),
+    'builtin-name': TextStyle(color: cool),
+    'meta': TextStyle(
+      color: muted,
+      fontWeight: FontWeight.w600,
+    ),
+    'meta-keyword': TextStyle(
+      color: warm,
+      fontWeight: FontWeight.w700,
+    ),
+    'addition': TextStyle(
+      color: mint,
+      backgroundColor: mint.withValues(alpha: 0.12),
+    ),
+    'deletion': TextStyle(
+      color: warm,
+      backgroundColor: warm.withValues(alpha: 0.12),
+    ),
+    'emphasis': const TextStyle(fontStyle: FontStyle.italic),
+    'strong': const TextStyle(fontWeight: FontWeight.bold),
+  };
 }
 
 /// {@template theme}
@@ -333,8 +613,10 @@ class MarkdownTheme extends InheritedWidget {
   /// The state from the closest instance of this class
   /// that encloses the given context, if any.
   /// e.g. `Theme.maybeOf(context)`.
-  static MarkdownThemeData? maybeOf(BuildContext context,
-          {bool listen = true}) =>
+  static MarkdownThemeData? maybeOf(
+    BuildContext context, {
+    bool listen = true,
+  }) =>
       listen
           ? context.dependOnInheritedWidgetOfExactType<MarkdownTheme>()?.data
           : context.getInheritedWidgetOfExactType<MarkdownTheme>()?.data;

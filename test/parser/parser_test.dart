@@ -117,6 +117,21 @@ void main() => group('Parse', () {
         );
       });
 
+      test('Fenced code block keeps language info', () {
+        const text = '```dart\n'
+            'void main() {}\n'
+            '```';
+
+        final markdown = markdownDecoder.convert(text);
+
+        expect(markdown.blocks, hasLength(1));
+        expect(markdown.blocks.single, isA<MD$Code>());
+        expect(
+          (markdown.blocks.single as MD$Code).language,
+          equals('dart'),
+        );
+      });
+
       test('Urls', () {
         var markdown = markdownDecoder.convert('[text](url)');
         expect(

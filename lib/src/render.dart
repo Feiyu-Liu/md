@@ -9,6 +9,15 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:highlight/highlight_core.dart' as highlight;
+import 'package:highlight/languages/bash.dart' as bash_language;
+import 'package:highlight/languages/dart.dart' as dart_language;
+import 'package:highlight/languages/javascript.dart' as javascript_language;
+import 'package:highlight/languages/json.dart' as json_language;
+import 'package:highlight/languages/plaintext.dart' as plaintext_language;
+import 'package:highlight/languages/typescript.dart' as typescript_language;
+import 'package:highlight/languages/xml.dart' as xml_language;
+import 'package:highlight/languages/yaml.dart' as yaml_language;
 import 'package:meta/meta.dart' as meta show internal;
 
 import 'animation/animated_block_painter.dart';
@@ -457,45 +466,50 @@ class MarkdownPainter {
   Float32List _blockOffsets = Float32List(0);
   List<BlockPainter> _blockPainters = const <BlockPainter>[];
 
-  static BlockPainter _defaultBlockBuilder(
-    MD$Block block,
-    MarkdownThemeData theme,
-  ) =>
-      block.map<BlockPainter>(
+  bool _shouldHighlightCodeBlock(MD$Block block) {
+    if (block is! MD$Code) return true;
+    if (_markdown.blocks.isEmpty) return true;
+    final isStreamingComplete = _isStreamingComplete?.value ?? true;
+    if (isStreamingComplete) return true;
+    return !identical(block, _markdown.blocks.last);
+  }
+
+  BlockPainter _defaultBlockBuilder(MD$Block block) => block.map<BlockPainter>(
         paragraph: (p) => BlockPainter$Paragraph(
           spans: p.spans,
-          theme: theme,
+          theme: _theme,
         ),
         heading: (h) => BlockPainter$Heading(
           level: h.level,
           spans: h.spans,
-          theme: theme,
+          theme: _theme,
         ),
         quote: (q) => BlockPainter$Quote(
           spans: q.spans,
           indent: q.indent,
-          theme: theme,
+          theme: _theme,
         ),
         code: (c) => BlockPainter$Code(
           language: c.language,
           text: c.text,
-          theme: theme,
+          theme: _theme,
+          highlightSyntax: _shouldHighlightCodeBlock(c),
         ),
         list: (l) => BlockPainter$List(
           items: l.items,
-          theme: theme,
+          theme: _theme,
         ),
         divider: (d) => BlockPainter$Divider(
-          theme: theme,
+          theme: _theme,
         ),
         table: (t) => BlockPainter$Table(
           header: t.header,
           rows: t.rows,
-          theme: theme,
+          theme: _theme,
         ),
         spacer: (s) => BlockPainter$Spacer(
           count: s.count,
-          theme: theme,
+          theme: _theme,
         ),
       );
 
@@ -527,15 +541,16 @@ class MarkdownPainter {
     _isEmpty = blocksToRender.isEmpty;
 
     final filter = _theme.blockFilter;
-    final filtered =
-        filter != null ? blocksToRender.where(filter) : blocksToRender;
-    final builder = _theme.builder ?? _defaultBlockBuilder;
+    final filteredBlocks =
+        (filter != null ? blocksToRender.where(filter) : blocksToRender)
+            .toList(growable: false);
+    final builder = _theme.builder;
 
     // Create raw painters
-    final rawPainters = filtered
+    final rawPainters = filteredBlocks
         .map<BlockPainter>(
           (block) =>
-              builder(block, _theme) ?? _defaultBlockBuilder(block, _theme),
+              builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
 
@@ -566,14 +581,15 @@ class MarkdownPainter {
     _isEmpty = blocksToRender.isEmpty;
 
     final filter = _theme.blockFilter;
-    final filtered =
-        filter != null ? blocksToRender.where(filter) : blocksToRender;
-    final builder = _theme.builder ?? _defaultBlockBuilder;
+    final filteredBlocks =
+        (filter != null ? blocksToRender.where(filter) : blocksToRender)
+            .toList(growable: false);
+    final builder = _theme.builder;
 
-    final rawPainters = filtered
+    final rawPainters = filteredBlocks
         .map<BlockPainter>(
           (block) =>
-              builder(block, _theme) ?? _defaultBlockBuilder(block, _theme),
+              builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
 
@@ -596,7 +612,8 @@ class MarkdownPainter {
     // 如果流式已完成且没有现有控制器，说明 RenderObject 是为已完成的消息重新创建的
     // 在这种情况下，不应该播放动画
     final isStreamingComplete = _isStreamingComplete?.value ?? false;
-    final isRebuildOfCompletedMessage = isStreamingComplete && oldCount == 0 && newCount > 0;
+    final isRebuildOfCompletedMessage =
+        isStreamingComplete && oldCount == 0 && newCount > 0;
 
     // Keep old controllers that are still valid
     final oldControllers = List<AnimationController>.from(_controllers);
@@ -773,7 +790,8 @@ class MarkdownPainter {
         // Add status listener to detect animation completion
         // 添加状态监听器以检测动画完成
         void statusListener(AnimationStatus status) {
-          if (status == AnimationStatus.completed && onAnimationComplete != null) {
+          if (status == AnimationStatus.completed &&
+              onAnimationComplete != null) {
             // Remove the listener to avoid multiple calls
             // 移除监听器以避免多次调用
             lastController.removeStatusListener(statusListener);
@@ -826,9 +844,8 @@ class MarkdownPainter {
     _lastPicture = null;
     _markdown = markdown;
     _theme = theme;
-    _isEmpty = animationConfig.enabled
-        ? newClosedBlocks.isEmpty
-        : markdown.isEmpty;
+    _isEmpty =
+        animationConfig.enabled ? newClosedBlocks.isEmpty : markdown.isEmpty;
 
     // If animation is enabled and vsync is available, rebuild with animations
     if (animationConfig.enabled && _vsync != null) {
@@ -1185,29 +1202,28 @@ TextSpan _paragraphFromMarkdownSpans({
 }) {
   final style = textStyle ?? theme.textStyle;
   final spanFilter = theme.spanFilter;
+  final spanBuilder = theme.spanBuilder;
   final filtered = spanFilter != null ? spans.where(spanFilter) : spans;
-  final mapper = textStyle != null
-      ? (MD$Span span) {
-          return TextSpan(
-            text: span.text,
-            style: theme.textStyleFor(span.style).merge(style),
-            recognizer: span.style.contains(MD$Style.link)
-                ? _buildTapRecognizer(span, theme.onLinkTap)
-                : null,
-          );
-        }
-      : (MD$Span span) {
-          return TextSpan(
-            text: span.text,
-            style: theme.textStyleFor(span.style),
-            recognizer: span.style.contains(MD$Style.link)
-                ? _buildTapRecognizer(span, theme.onLinkTap)
-                : null,
-          );
-        };
+
+  InlineSpan mapSpan(MD$Span span) {
+    final resolvedStyle = textStyle != null
+        ? theme.textStyleFor(span.style).merge(style)
+        : theme.textStyleFor(span.style);
+    final customSpan = spanBuilder?.call(span, resolvedStyle, theme);
+
+    return customSpan ??
+        TextSpan(
+          text: span.text,
+          style: resolvedStyle,
+          recognizer: span.style.contains(MD$Style.link)
+              ? _buildTapRecognizer(span, theme.onLinkTap)
+              : null,
+        );
+  }
+
   return TextSpan(
     style: textStyle ?? theme.textStyle,
-    children: filtered.map<InlineSpan>(mapper).toList(growable: false),
+    children: filtered.map<InlineSpan>(mapSpan).toList(growable: false),
   );
 }
 
@@ -1814,6 +1830,105 @@ class BlockPainter$Divider implements BlockPainter {
   }
 }
 
+final class _DefaultMarkdownCodeHighlighter implements MarkdownCodeHighlighter {
+  const _DefaultMarkdownCodeHighlighter();
+
+  static const Map<String, String> _languageAliases = <String, String>{
+    'js': 'javascript',
+    'ts': 'typescript',
+    'sh': 'bash',
+    'shell': 'bash',
+    'zsh': 'bash',
+    'yml': 'yaml',
+    'text': 'plaintext',
+    'txt': 'plaintext',
+  };
+
+  static final highlight.Highlight _highlighter = _createHighlighter();
+
+  static highlight.Highlight _createHighlighter() {
+    final highlighter = highlight.Highlight();
+    highlighter.registerLanguages(<String, highlight.Mode>{
+      'bash': bash_language.bash,
+      'dart': dart_language.dart,
+      'javascript': javascript_language.javascript,
+      'json': json_language.json,
+      'plaintext': plaintext_language.plaintext,
+      'typescript': typescript_language.typescript,
+      'xml': xml_language.xml,
+      'yaml': yaml_language.yaml,
+    });
+    return highlighter;
+  }
+
+  static String? _normalizeLanguage(String? language) {
+    final normalized = language?.trim().toLowerCase();
+    if (normalized == null || normalized.isEmpty) return null;
+    return _languageAliases[normalized] ?? normalized;
+  }
+
+  static InlineSpan _nodeToInlineSpan(
+    highlight.Node node,
+    MarkdownThemeData theme,
+    TextStyle parentStyle,
+  ) {
+    final resolvedStyle = theme.codeTextStyleFor(
+      node.className,
+      baseStyle: parentStyle,
+    );
+
+    if (node.children case List<highlight.Node> children
+        when children.isNotEmpty) {
+      return TextSpan(
+        style: resolvedStyle,
+        children: children
+            .map<InlineSpan>(
+              (child) => _nodeToInlineSpan(child, theme, resolvedStyle),
+            )
+            .toList(growable: false),
+      );
+    }
+
+    return TextSpan(
+      text: node.value ?? '',
+      style: resolvedStyle,
+    );
+  }
+
+  @override
+  TextSpan build({
+    required String text,
+    required String? language,
+    required TextStyle textStyle,
+    required MarkdownThemeData theme,
+  }) {
+    final baseStyle = textStyle.merge(theme.resolvedCodeTheme['root']);
+    final normalizedLanguage = _normalizeLanguage(language) ?? 'plaintext';
+    final nodes = _highlighter
+        .parse(
+          text,
+          language: normalizedLanguage,
+        )
+        .nodes;
+
+    if (nodes == null || nodes.isEmpty) {
+      return TextSpan(
+        text: text,
+        style: baseStyle,
+      );
+    }
+
+    return TextSpan(
+      style: baseStyle,
+      children: nodes
+          .map<InlineSpan>(
+            (node) => _nodeToInlineSpan(node, theme, baseStyle),
+          )
+          .toList(growable: false),
+    );
+  }
+}
+
 /// A class for painting a code block in markdown.
 /// 用于在 Markdown 中绘制代码块的类
 @meta.internal
@@ -1822,25 +1937,77 @@ class BlockPainter$Code implements BlockPainter {
     required String text,
     required String? language,
     required this.theme,
-  }) : painter = TextPainter(
-          text: TextSpan(
+    this.highlightSyntax = true,
+  })  : _padding = theme.codePadding,
+        _languageGap = 6.0,
+        _backgroundPaint = Paint()
+          ..color = theme.resolvedCodeBackgroundColor
+          ..isAntiAlias = false
+          ..style = PaintingStyle.fill,
+        painter = TextPainter(
+          text: _buildCodeText(
             text: text,
-            style: theme.textStyle.copyWith(
-              fontFamily: 'monospace',
-              fontSize: theme.textStyle.fontSize ?? kDefaultFontSize,
-            ),
+            language: language,
+            theme: theme,
+            highlightSyntax: highlightSyntax,
           ),
           textAlign: TextAlign.start,
           textDirection: theme.textDirection,
           textScaler: theme.textScaler,
+        ),
+        languagePainter = _buildLanguagePainter(
+          language: language,
+          theme: theme,
         );
 
-  static const double padding = 8.0; // Padding for code blocks.
-  // 代码块的内边距
+  static TextSpan _buildCodeText({
+    required String text,
+    required String? language,
+    required MarkdownThemeData theme,
+    required bool highlightSyntax,
+  }) {
+    final baseStyle = theme.resolvedCodeStyle;
+
+    if (!highlightSyntax) {
+      return TextSpan(
+        text: text,
+        style: baseStyle.merge(theme.resolvedCodeTheme['root']),
+      );
+    }
+
+    return (theme.codeHighlighter ?? const _DefaultMarkdownCodeHighlighter())
+        .build(
+      text: text,
+      language: language,
+      textStyle: baseStyle,
+      theme: theme,
+    );
+  }
+
+  static TextPainter? _buildLanguagePainter({
+    required String? language,
+    required MarkdownThemeData theme,
+  }) {
+    final label = language?.trim();
+    if (label == null || label.isEmpty) return null;
+    return TextPainter(
+      text: TextSpan(
+        text: label,
+        style: theme.resolvedCodeLanguageStyle,
+      ),
+      textAlign: TextAlign.start,
+      textDirection: theme.textDirection,
+      textScaler: theme.textScaler,
+    );
+  }
 
   final MarkdownThemeData theme;
-
+  final bool highlightSyntax;
+  final EdgeInsets _padding;
+  final double _languageGap;
+  final Paint _backgroundPaint;
   final TextPainter painter;
+  final TextPainter? languagePainter;
 
   @override
   Size get size => _size;
@@ -1856,21 +2023,31 @@ class BlockPainter$Code implements BlockPainter {
 
   @override
   Size layout(double width) {
-    if (width <= padding * 2) {
+    if (width <= _padding.horizontal) {
       // If the width is less than or equal to padding, return zero size.
       // 如果宽度小于或等于内边距，则返回零尺寸
       _size = Size.zero;
       return _size;
     }
+
+    final contentWidth = width - _padding.horizontal;
+    languagePainter?.layout(
+      minWidth: 0,
+      maxWidth: contentWidth,
+    );
     painter.layout(
       minWidth: 0,
-      maxWidth: width - padding * 2,
+      maxWidth: contentWidth,
     );
+
+    final labelHeight = languagePainter?.size.height ?? 0.0;
+    final labelWidth = languagePainter?.size.width ?? 0.0;
+    final gap =
+        labelHeight > 0.0 && painter.size.height > 0.0 ? _languageGap : 0.0;
+
     return _size = Size(
-      painter.size.width + padding * 2, // Add padding to the width.
-      // 将内边距添加到宽度
-      painter.size.height + padding * 2, // Add padding to the height.
-      // 将内边距添加到高度
+      math.max(labelWidth, painter.size.width) + _padding.horizontal,
+      labelHeight + gap + painter.size.height + _padding.vertical,
     );
   }
 
@@ -1879,24 +2056,38 @@ class BlockPainter$Code implements BlockPainter {
     // If the width is less than required do not paint anything.
     // 如果宽度小于所需宽度，则不绘制任何内容
     if (size.width < _size.width) return;
+
+    final radius = Radius.circular(math.max(_padding.left, _padding.top));
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(0, offset, size.width, _size.height),
-        const Radius.circular(padding),
+        radius,
       ),
-      Paint()
-        ..color = theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235)
-        ..isAntiAlias = false
-        ..style = PaintingStyle.fill,
+      _backgroundPaint,
     );
+
+    var currentY = offset + _padding.top;
+
+    if (languagePainter != null) {
+      languagePainter!.paint(
+        canvas,
+        Offset(_padding.left, currentY),
+      );
+      currentY += languagePainter!.height;
+      if (painter.height > 0.0) {
+        currentY += _languageGap;
+      }
+    }
+
     painter.paint(
       canvas,
-      Offset(padding, offset + padding),
+      Offset(_padding.left, currentY),
     );
   }
 
   @override
   void dispose() {
+    languagePainter?.dispose();
     painter.dispose();
   }
 }

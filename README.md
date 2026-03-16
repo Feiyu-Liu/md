@@ -13,6 +13,7 @@ A high-performance, lightweight Markdown parser and renderer specifically design
 - **🚀 High Performance**: Optimized parsing with minimal memory footprint
 - **⚡ Streaming Support**: Incremental parsing for real-time LLM output ([docs](doc/streaming_markdown_decoder.md))
 - **🎨 Fully Customizable**: Theme-based styling with complete control over appearance
+- **🌈 Code Highlighting**: Syntax highlighting for fenced code blocks with language labels
 - **📱 Flutter Native**: Built from the ground up for Flutter with custom render objects
 - **🔗 Interactive Elements**: Clickable links with customizable tap handlers
 - **🌐 Cross Platform**: Works on all Flutter-supported platforms
@@ -72,10 +73,13 @@ A high-performance, lightweight Markdown parser and renderer specifically design
 
 ### Code Blocks
 
+Add a language after the opening fence to enable syntax highlighting:
+
 ````markdown
 ```dart
 void main() {
-  print('Hello, Markdown!');
+  const message = 'Hello, Markdown!';
+  print(message);
 }
 ```
 ````
@@ -153,6 +157,16 @@ MarkdownTheme(
     blockFilter: (block) => block is! MD$Image,
     // Filter spans (e.g., exclude certain styles)
     spanFilter: (span) => !span.style.contains(MD$Style.spoiler),
+    // Tune fenced code blocks
+    codePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    codeLanguageStyle: const TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+    ),
+    codeTheme: const <String, TextStyle>{
+      'keyword': TextStyle(color: Color(0xFFD73A49)),
+      'string': TextStyle(color: Color(0xFF22863A)),
+    },
   ),
   child: MarkdownWidget(
     markdown: yourMarkdown,
@@ -162,6 +176,48 @@ MarkdownTheme(
 
 Or you can use the `MarkdownThemeData.mergeTheme(Theme.of(context))` factory to create a theme that inherits from the application's theme.
 This approach allows you to easily support both light and dark themes, and keeps your markdown styling consistent with the rest of your application.
+
+### Syntax Highlighting
+
+Fenced code blocks use syntax highlighting automatically when a language is
+provided:
+
+````markdown
+```dart
+void main() {
+  const answer = 42;
+  print(answer);
+}
+```
+````
+
+You can customize token colors with `codeTheme` or replace the entire
+highlighter by providing `codeHighlighter`.
+
+Built-in language support:
+`dart`, `javascript` (`js`), `typescript` (`ts`), `json`, `yaml` (`yml`),
+`xml`, `bash` (`sh`, `shell`, `zsh`), and `plaintext` (`text`, `txt`).
+
+If no language is provided, or a streaming code block is not closed yet, the
+renderer falls back to plain monospace text and upgrades to highlighted output
+after the block is complete.
+
+Example:
+
+```dart
+MarkdownThemeData(
+  codeBackgroundColor: const Color(0xFFF6F8FA),
+  codeLanguageStyle: const TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w700,
+  ),
+  codeTheme: const <String, TextStyle>{
+    'keyword': TextStyle(color: Color(0xFFD73A49)),
+    'string': TextStyle(color: Color(0xFF22863A)),
+    'number': TextStyle(color: Color(0xFF005CC5)),
+  },
+)
+```
 
 ### Custom Block Painters
 
@@ -305,9 +361,11 @@ flutter test
 ### Running the Example
 
 ```bash
-cd example
-flutter run
+cd example && flutter run
 ```
+
+The example app includes Dart, JSON, and Bash code samples so you can verify
+syntax highlighting immediately.
 
 ## 📄 License
 

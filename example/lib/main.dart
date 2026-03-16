@@ -32,6 +32,8 @@ class App extends StatelessWidget {
             // Exclude images from the markdown rendering,
             // so they are not rendered in the output.
             // Because image spans are not supported yet.
+            codePadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             spanFilter: (span) => !span.style.contains(MD$Style.image),
             onLinkTap: (title, url) {
               ScaffoldMessenger.maybeOf(context)
@@ -362,9 +364,22 @@ You may be using [Markdown Live Preview](https://markdownlivepreview.com/).
 
 ## Blocks of code
 
+```dart
+void main() {
+  const message = 'Hello world';
+  debugPrint(message);
+}
 ```
-let message = 'Hello world';
-alert(message);
+
+```json
+{
+  "message": "Hello world",
+  "count": 2
+}
+```
+
+```bash
+flutter test
 ```
 
 ---
