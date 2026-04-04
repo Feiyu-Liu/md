@@ -224,6 +224,38 @@ void main() => group('StreamingMarkdownDecoder', () {
           expect(decoder.lineCount, greaterThanOrEqualTo(1));
         });
 
+        test('list streaming tracks closed item count', () {
+          final decoder = StreamingMarkdownDecoder();
+
+          decoder.append('- Item 1\n');
+          decoder.append('- Item 2');
+          final second = decoder.build().blocks.whereType<MD$List>().first;
+          expect(second.closedItemCount, equals(1));
+          expect(second.items.length, equals(2));
+          expect(second.visibleItems.length, equals(1));
+
+          decoder.append('\nParagraph');
+          final third = decoder.build().blocks.whereType<MD$List>().first;
+          expect(third.closedItemCount, equals(2));
+          expect(third.visibleItems.length, equals(2));
+        });
+
+        test('list visibleItems keeps nested prefix stable', () {
+          final decoder = StreamingMarkdownDecoder();
+          decoder.append('- Parent\n');
+          decoder.append('  - Child 1\n');
+          decoder.append('  - Child 2\n');
+
+          final list = decoder.build().blocks.first as MD$List;
+          expect(list.closedItemCount, equals(2));
+          expect(list.visibleItems, hasLength(1));
+          expect(list.visibleItems.first.children, hasLength(1));
+          expect(
+            list.visibleItems.first.children.first.text,
+            equals('Child 1'),
+          );
+        });
+
         test('list streaming', () {
           final decoder = StreamingMarkdownDecoder();
           decoder.append('- Item 1\n');

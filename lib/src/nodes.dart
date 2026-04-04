@@ -436,7 +436,8 @@ final class MD$List extends MD$Block {
   const MD$List({
     required this.text,
     required this.items,
-  });
+    int? closedItemCount,
+  }) : _closedItemCount = closedItemCount;
 
   @override
   String get type => 'list';
@@ -446,6 +447,69 @@ final class MD$List extends MD$Block {
 
   /// The list items in the list block.
   final List<MD$ListItem> items;
+
+  final int? _closedItemCount;
+
+  /// The number of list items that are currently closed.
+  int get closedItemCount => _closedItemCount ?? countItems(items);
+
+  /// The currently visible list items.
+  List<MD$ListItem> get visibleItems =>
+      _takeItems(items, remaining: closedItemCount).items;
+
+  /// Returns a copy of the list with modified properties.
+  MD$List copyWith({
+    String? text,
+    List<MD$ListItem>? items,
+    int? closedItemCount,
+  }) =>
+      MD$List(
+        text: text ?? this.text,
+        items: items ?? this.items,
+        closedItemCount: closedItemCount ?? _closedItemCount,
+      );
+
+  /// Counts all list items, including nested children.
+  static int countItems(List<MD$ListItem> items) {
+    var count = 0;
+    for (final item in items) {
+      count++;
+      if (item.children.isNotEmpty) {
+        count += countItems(item.children);
+      }
+    }
+    return count;
+  }
+
+  static ({List<MD$ListItem> items, int remaining}) _takeItems(
+    List<MD$ListItem> items, {
+    required int remaining,
+  }) {
+    if (remaining <= 0) {
+      return (items: const <MD$ListItem>[], remaining: 0);
+    }
+
+    final visible = <MD$ListItem>[];
+    for (final item in items) {
+      if (remaining <= 0) break;
+      remaining--;
+      var next = item;
+      if (item.children.isNotEmpty) {
+        final result = _takeItems(item.children, remaining: remaining);
+        next = item.copyWith(
+          children: List<MD$ListItem>.unmodifiable(result.items),
+        );
+        remaining = result.remaining;
+      }
+      visible.add(next);
+    }
+    return (
+      items: visible.isEmpty
+          ? const <MD$ListItem>[]
+          : List<MD$ListItem>.unmodifiable(visible),
+      remaining: remaining,
+    );
+  }
 
   @override
   T map<T>({

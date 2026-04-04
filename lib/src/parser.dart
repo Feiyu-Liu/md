@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'markdown.dart';
@@ -289,17 +290,26 @@ _ParseResult _parseMarkdownLines({
         return items.isEmpty ? const <MD$ListItem>[] : items;
       }
 
+      final items = traverse();
       final count = j - i;
       final listLines = <String>[];
       for (var k = i; k < j && k < length; k++) {
         listLines.add(lineAt(k));
       }
 
+      final totalItemCount = MD$List.countItems(items);
+      final closedItemCount =
+          j < length ? totalItemCount : math.max(0, totalItemCount - 1);
+
       if (j < length) {
         onBlockClosed?.call(i, j);
       }
 
-      pushBlock(MD$List(text: listLines.join('\n'), items: traverse()));
+      pushBlock(MD$List(
+        text: listLines.join('\n'),
+        items: items,
+        closedItemCount: closedItemCount,
+      ));
 
       if (i + count == length) break;
       i = j - 1;

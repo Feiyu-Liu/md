@@ -360,6 +360,9 @@ class MarkdownPainter {
         _isStreamingComplete = isStreamingComplete,
         _isEmpty = _getClosedBlocks(markdown, isStreamingComplete).isEmpty,
         _size = Size.zero {
+    _lastClosedSignature = _closedBlocksSignature(
+      _getClosedBlocks(markdown, isStreamingComplete),
+    );
     _rebuild();
   }
 
@@ -398,11 +401,35 @@ class MarkdownPainter {
       return blocks;
     }
 
-    // Otherwise, all blocks except the last one are closed
-    // 否则，除了最后一个块之外的所有块都是闭合的
-    if (blocks.length == 1) return const <MD$Block>[];
-    return blocks.sublist(0, blocks.length - 1);
+    final closedBlocks = <MD$Block>[
+      ...blocks.take(blocks.length - 1),
+    ];
+    final last = blocks.last;
+    if (last is MD$List && last.closedItemCount > 0) {
+      closedBlocks.add(last.copyWith(items: last.visibleItems));
+    }
+    return closedBlocks.isEmpty ? const <MD$Block>[] : closedBlocks;
   }
+
+  static int _closedBlocksSignature(List<MD$Block> blocks) => Object.hashAll(
+        blocks.map(
+          (block) => block.map<Object>(
+            paragraph: (p) => Object.hash(block.type, p.text),
+            heading: (h) => Object.hash(block.type, h.level, h.text),
+            quote: (q) => Object.hash(block.type, q.indent, q.text),
+            code: (c) => Object.hash(block.type, c.language, c.text),
+            list: (l) => Object.hash(
+              block.type,
+              l.text,
+              l.items.length,
+              l.closedItemCount,
+            ),
+            divider: (_) => block.type,
+            table: (t) => Object.hash(block.type, t.text, t.rows.length),
+            spacer: (s) => Object.hash(block.type, s.count),
+          ),
+        ),
+      );
 
   /// TickerProvider for creating AnimationControllers.
   /// 用于创建 AnimationController 的 TickerProvider
@@ -427,6 +454,9 @@ class MarkdownPainter {
   /// Number of closed blocks from the last rebuild.
   /// 上次重建时的已闭合块数量
   int _lastClosedCount = 0;
+
+  /// Signature of closed blocks from the last rebuild.
+  int _lastClosedSignature = 0;
 
   /// Whether streaming completion has been detected.
   /// 是否已检测到流式完成
@@ -739,6 +769,9 @@ class MarkdownPainter {
     }
 
     _lastClosedCount = newCount;
+    _lastClosedSignature = _closedBlocksSignature(
+      _getClosedBlocks(_markdown, _isStreamingComplete),
+    );
 
     // Handle streaming completion and auto-disable animation
     // 处理流式完成和自动禁用动画
@@ -828,14 +861,18 @@ class MarkdownPainter {
 
     // Check if closed block count changed (for animation)
     final oldClosedCount = _lastClosedCount;
+    final oldClosedSignature = _lastClosedSignature;
     final newClosedBlocks = _getClosedBlocks(markdown, isStreamingComplete);
     final newClosedCount = newClosedBlocks.length;
+    final newClosedSignature = _closedBlocksSignature(newClosedBlocks);
     final closedCountChanged = newClosedCount != oldClosedCount;
+    final closedContentChanged = newClosedSignature != oldClosedSignature;
 
     if (identical(_markdown, markdown) &&
         identical(_theme, theme) &&
         !configChanged &&
         !closedCountChanged &&
+        !closedContentChanged &&
         !streamingCompleteChanged) {
       return false;
     }
