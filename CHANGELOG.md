@@ -1,3 +1,13 @@
+## Unreleased
+
+- **ADDED**: Native Markdown text selection under Flutter `SelectionArea`,
+  including mouse, touch, keyboard, context-menu, and clipboard behavior.
+- **ADDED**: Structural clipboard output for lists, tables, code blocks, links,
+  paragraphs, headings, and quotes.
+- **ADDED**: Selection preservation for compatible streaming updates.
+- **CHANGED**: Built-in links now use gesture-arena hit testing so selection
+  drags do not trigger link taps.
+
 ## 0.0.8
 
 - **CHANGED**: New table render

@@ -3,12 +3,13 @@ import 'package:flutter/widgets.dart';
 import 'animation/animation_config.dart';
 import 'markdown.dart' show Markdown;
 import 'render.dart' show MarkdownRenderObject;
+import 'selection.dart' show MarkdownSelectionDelegate;
 import 'theme.dart';
 
 /// {@template markdown_widget}
 /// MarkdownWidget widget.
 /// {@endtemplate}
-class MarkdownWidget extends LeafRenderObjectWidget {
+class MarkdownWidget extends StatefulWidget {
   /// {@macro markdown_widget}
   const MarkdownWidget({
     required this.markdown,
@@ -46,8 +47,16 @@ class MarkdownWidget extends LeafRenderObjectWidget {
   final VoidCallback? onAnimationComplete;
 
   @override
-  RenderObject createRenderObject(BuildContext context) {
-    final theme = this.theme ??
+  State<MarkdownWidget> createState() => _MarkdownWidgetState();
+}
+
+class _MarkdownWidgetState extends State<MarkdownWidget> {
+  final MarkdownSelectionDelegate _selectionDelegate =
+      MarkdownSelectionDelegate();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = widget.theme ??
         MarkdownTheme.maybeOf(context) ??
         MarkdownThemeData(
           textStyle: DefaultTextStyle.of(context).style,
@@ -55,12 +64,66 @@ class MarkdownWidget extends LeafRenderObjectWidget {
           textScaler:
               MediaQuery.maybeTextScalerOf(context) ?? TextScaler.noScaling,
         );
+    final registrar = SelectionContainer.maybeOf(context);
+    final selectionStyle = DefaultSelectionStyle.of(context);
+    final child = _MarkdownRenderObjectWidget(
+      markdown: widget.markdown,
+      theme: theme,
+      animationConfig: widget.animationConfig,
+      isStreamingComplete: widget.isStreamingComplete,
+      onAnimationComplete: widget.onAnimationComplete,
+      selectionDelegate: registrar == null ? null : _selectionDelegate,
+      selectionColor:
+          selectionStyle.selectionColor ?? DefaultSelectionStyle.defaultColor,
+    );
+    if (registrar == null) return child;
+
+    return MouseRegion(
+      cursor: selectionStyle.mouseCursor ?? SystemMouseCursors.text,
+      child: SelectionContainer(
+        registrar: registrar,
+        delegate: _selectionDelegate,
+        child: child,
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _selectionDelegate.dispose();
+    super.dispose();
+  }
+}
+
+class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
+  const _MarkdownRenderObjectWidget({
+    required this.markdown,
+    required this.theme,
+    required this.animationConfig,
+    required this.isStreamingComplete,
+    required this.onAnimationComplete,
+    required this.selectionDelegate,
+    required this.selectionColor,
+  });
+
+  final Markdown markdown;
+  final MarkdownThemeData theme;
+  final MarkdownAnimationConfig animationConfig;
+  final ValueNotifier<bool>? isStreamingComplete;
+  final VoidCallback? onAnimationComplete;
+  final MarkdownSelectionDelegate? selectionDelegate;
+  final Color selectionColor;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
     return MarkdownRenderObject(
       markdown: markdown,
       theme: theme,
       animationConfig: animationConfig,
       isStreamingComplete: isStreamingComplete,
       onAnimationComplete: onAnimationComplete,
+      selectionDelegate: selectionDelegate,
+      selectionColor: selectionColor,
     );
   }
 
@@ -69,20 +132,14 @@ class MarkdownWidget extends LeafRenderObjectWidget {
     BuildContext context,
     MarkdownRenderObject renderObject,
   ) {
-    final theme = this.theme ??
-        MarkdownTheme.maybeOf(context) ??
-        MarkdownThemeData(
-          textStyle: DefaultTextStyle.of(context).style,
-          textDirection: Directionality.maybeOf(context) ?? TextDirection.ltr,
-          textScaler:
-              MediaQuery.maybeTextScalerOf(context) ?? TextScaler.noScaling,
-        );
     renderObject.update(
       markdown: markdown,
       theme: theme,
       animationConfig: animationConfig,
       isStreamingComplete: isStreamingComplete,
       onAnimationComplete: onAnimationComplete,
+      selectionDelegate: selectionDelegate,
+      selectionColor: selectionColor,
     );
   }
 }

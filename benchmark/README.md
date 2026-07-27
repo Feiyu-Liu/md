@@ -62,3 +62,33 @@ Results:
 - **Avg lines/parse**: Average lines parsed per operation (shows optimization effectiveness)
 
 The `Avg lines/parse` metric demonstrates the core optimization: `StreamingMarkdownDecoder` only re-parses open lines instead of the entire document.
+
+## Render Selection Benchmark
+
+Measures 200 streaming updates over a 500-line document, both outside and
+inside a `SelectionArea`:
+
+```bash
+flutter test benchmark/render_selection_benchmark_test.dart --reporter expanded
+```
+
+The no-selection result protects the renderer's zero-fragment fast path. The
+selection-enabled result includes creation and registration of native
+selectable fragments. Use these acceptance limits when changing selection:
+
+- no-selection median must not regress by more than 5% from its baseline;
+- selection-enabled overhead must not exceed 20% relative to the same run's
+  no-selection median.
+
+One paired Flutter 3.41.9 debug test run on July 25, 2026 produced:
+
+```text
+HEAD no-selection baseline: 2367.3 ms
+Current no-selection median: 2444.4 ms
+No-selection regression: 3.3%
+Selection enabled median: 2680.2 ms
+Selection overhead: 9.6%
+```
+
+Absolute timings vary by machine and build mode, so use the relative overhead
+and a freshly measured local baseline for comparisons.

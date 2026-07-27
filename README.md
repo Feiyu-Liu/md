@@ -16,6 +16,8 @@ A high-performance, lightweight Markdown parser and renderer specifically design
 - **🌈 Code Highlighting**: Syntax highlighting for fenced code blocks with language labels
 - **📱 Flutter Native**: Built from the ground up for Flutter with custom render objects
 - **🔗 Interactive Elements**: Clickable links with customizable tap handlers
+- **🖱️ Native Selection**: Mouse, touch, keyboard, and clipboard support through
+  Flutter's `SelectionArea`
 - **🌐 Cross Platform**: Works on all Flutter-supported platforms
 - **📝 Rich Syntax Support**: Comprehensive Markdown syntax coverage
 - **🎯 AI-Optimized**: Specifically designed for AI-generated content display
@@ -124,6 +126,36 @@ Then run:
 ```bash
 flutter pub get
 ```
+
+### Text Selection
+
+Wrap `MarkdownWidget` in Flutter's `SelectionArea` to enable native mouse,
+touch, keyboard, context-menu, and clipboard selection:
+
+```dart
+SelectionArea(
+  child: MarkdownWidget(
+    markdown: Markdown.fromString(markdownSource),
+  ),
+)
+```
+
+No selection objects are created when there is no ambient `SelectionArea`.
+The built-in paragraph, heading, quote, list, table, and code painters are
+selectable. Clipboard text preserves Markdown structure where useful:
+
+- links copy their visible title rather than the URL;
+- nested lists copy with two-space indentation;
+- table rows copy as tab-separated values;
+- fenced code blocks copy the code body without the language label.
+
+An existing selection is preserved when streaming content is appended after
+it. If an update changes selected content, the selection is clamped to the
+unchanged prefix or cleared when it can no longer be mapped safely.
+
+The public `BlockPainter` API remains unchanged. A custom block painter stays
+non-selectable because it does not expose laid-out text fragments to the
+renderer.
 
 ## 🎨 Customization
 

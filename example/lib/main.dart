@@ -230,10 +230,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: SingleChildScrollView(
                       primary: false,
                       padding: const EdgeInsets.all(8.0),
-                      child: ValueListenableBuilder(
-                        valueListenable: _outputController,
-                        builder: (context, value, child) => MarkdownWidget(
-                          markdown: value,
+                      child: SelectionArea(
+                        child: ValueListenableBuilder(
+                          valueListenable: _outputController,
+                          builder: (context, value, child) => MarkdownWidget(
+                            markdown: value,
+                          ),
                         ),
                       ),
                     ),
@@ -588,12 +590,14 @@ class _StreamingDemoScreenState extends State<StreamingDemoScreen> {
                   width: double.infinity,
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(50),
-                    child: ValueListenableBuilder<Markdown>(
-                      valueListenable: _outputController,
-                      builder: (context, markdown, _) => MarkdownWidget(
-                        markdown: markdown,
-                        animationConfig: _animationConfig,
-                        isStreamingComplete: _isStreamingComplete,
+                    child: SelectionArea(
+                      child: ValueListenableBuilder<Markdown>(
+                        valueListenable: _outputController,
+                        builder: (context, markdown, _) => MarkdownWidget(
+                          markdown: markdown,
+                          animationConfig: _animationConfig,
+                          isStreamingComplete: _isStreamingComplete,
+                        ),
                       ),
                     ),
                   ),

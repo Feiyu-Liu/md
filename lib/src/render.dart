@@ -24,19 +24,25 @@ import 'animation/animated_block_painter.dart';
 import 'animation/animation_config.dart';
 import 'markdown.dart';
 import 'nodes.dart';
+import 'selection.dart';
 import 'theme.dart';
 
 @meta.internal
-class MarkdownRenderObject extends RenderBox implements TickerProvider {
+class MarkdownRenderObject extends RenderBox
+    implements TickerProvider, MarkdownSelectionOwner {
   MarkdownRenderObject({
     required Markdown markdown,
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
     VoidCallback? onAnimationComplete,
+    MarkdownSelectionDelegate? selectionDelegate,
+    Color selectionColor = const Color(0x6633B5E5),
   })  : _animationConfig = animationConfig,
         _isStreamingComplete = isStreamingComplete,
         _externalOnAnimationComplete = onAnimationComplete,
+        _selectionDelegate = selectionDelegate,
+        _selectionColor = selectionColor,
         _painter = MarkdownPainter(
           markdown: markdown,
           theme: theme,
@@ -76,6 +82,35 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   /// Set of active tickers for animation.
   /// 用于动画的活动 Ticker 集合
   Set<Ticker>? _tickers;
+
+  MarkdownSelectionDelegate? _selectionDelegate;
+  Color _selectionColor;
+  List<MarkdownSelectableFragment> _selectionFragments =
+      const <MarkdownSelectableFragment>[];
+  String _selectionText = '';
+
+  @visibleForTesting
+  int get debugSelectionFragmentCount => _selectionFragments.length;
+
+  @visibleForTesting
+  String? get debugSelectedText =>
+      _selectionDelegate?.getSelectedContent()?.plainText;
+
+  @visibleForTesting
+  List<Rect> get debugSelectionPaintRects => <Rect>[
+        for (final fragment in _selectionFragments)
+          for (final rect in fragment.value.selectionRects)
+            rect.shift(fragment.descriptor.paintOffset()),
+      ];
+
+  @override
+  RenderObject get selectionRenderObject => this;
+
+  @override
+  bool get selectionAttached => attached;
+
+  @override
+  void markSelectionNeedsPaint() => markNeedsPaint();
 
   /// Handles streaming complete state changes.
   /// 处理流式输出完成状态变化
@@ -139,7 +174,7 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   bool get isRepaintBoundary => false;
 
   @override
-  bool get alwaysNeedsCompositing => false;
+  bool get alwaysNeedsCompositing => _selectionFragments.isNotEmpty;
 
   @override
   bool get sizedByParent => false;
@@ -169,6 +204,7 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     // 设置渲染盒的尺寸以匹配绘制器的尺寸
     size =
         constraints.constrain(_painter.layout(maxWidth: constraints.maxWidth));
+    _syncSelectionFragments();
   }
 
   @override
@@ -184,17 +220,11 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   bool hitTestChildren(
     BoxHitTestResult result, {
     required Offset position,
-  }) =>
-      false;
-
-  @override
-  bool hitTest(BoxHitTestResult result, {required Offset position}) {
-    var hitTarget = false;
-    if (size.contains(position)) {
-      hitTarget = hitTestSelf(position);
-      result.add(BoxHitTestEntry(this, position));
-    }
-    return hitTarget;
+  }) {
+    final target = _painter.hitTestLink(position);
+    if (target == null) return false;
+    result.add(HitTestEntry(target));
+    return true;
   }
 
   @override
@@ -207,6 +237,7 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   void _handleSystemFontsChange() {
     // Invalidate cached layouts in painter and all block painters
     // 使绘制器和所有块绘制器中的缓存布局失效
+    _clearSelectionFragments();
     _painter.invalidateLayout();
     // Request new layout and paint
     // 请求新的布局和绘制
@@ -237,7 +268,13 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
     VoidCallback? onAnimationComplete,
+    MarkdownSelectionDelegate? selectionDelegate,
+    Color selectionColor = const Color(0x6633B5E5),
   }) {
+    _clearSelectionFragments();
+    _selectionDelegate = selectionDelegate;
+    _selectionColor = selectionColor;
+
     // Update external animation complete callback
     // 更新外部动画完成回调
     _externalOnAnimationComplete = onAnimationComplete;
@@ -279,6 +316,8 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
       // Mark the render object as needing layout.
       // 将渲染对象标记为需要重新布局
       markNeedsLayout();
+    } else {
+      _syncSelectionFragments();
     }
 
     // If there are active animations, request repaint
@@ -300,6 +339,7 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
   @override
   @protected
   void dispose() {
+    _clearSelectionFragments();
     _isStreamingComplete?.removeListener(_handleStreamingCompleteChanged);
     // Dispose all tickers
     // 释放所有 tickers
@@ -321,15 +361,19 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
       return; // If the markdown is empty, do not paint anything.
     // 如果 Markdown 为空，则不绘制任何内容
 
-    // ignore: unused_local_variable
+    for (final fragment in _selectionFragments) {
+      fragment.paintSelection(context, offset);
+    }
+
     final canvas = context.canvas
       ..save()
       ..translate(offset.dx, offset.dy);
-    //..clipRect(Rect.fromLTWH(0, 0, size.width, size.height));
-
     _painter.paint(canvas, size);
-
     canvas.restore();
+
+    for (final fragment in _selectionFragments) {
+      fragment.paintHandleLayers(context, offset);
+    }
 
     // If there are active animations, schedule another paint
     // 如果有活动的动画，安排另一次绘制
@@ -340,6 +384,48 @@ class MarkdownRenderObject extends RenderBox implements TickerProvider {
         }
       });
     }
+  }
+
+  void _clearSelectionFragments() {
+    if (_selectionFragments.isEmpty) return;
+    _selectionDelegate?.unregisterFragments(_selectionFragments);
+    _selectionFragments = const <MarkdownSelectableFragment>[];
+    markNeedsCompositingBitsUpdate();
+  }
+
+  void _syncSelectionFragments() {
+    _clearSelectionFragments();
+    final delegate = _selectionDelegate;
+    if (delegate == null || _painter.isEmpty) {
+      _selectionText = '';
+      return;
+    }
+
+    final document = _painter.selectionDocument();
+    var documentOffset = 0;
+    final fragments = <MarkdownSelectableFragment>[];
+    for (final descriptor in document.descriptors) {
+      final fragment = MarkdownSelectableFragment(
+        owner: this,
+        descriptor: descriptor,
+        documentStart: documentOffset,
+        selectionColor: _selectionColor,
+      );
+      fragments.add(fragment);
+      documentOffset += fragment.contentLength;
+    }
+
+    delegate.registerFragments(
+      previousText: _selectionText,
+      text: document.text,
+      fragments: fragments,
+    );
+    _selectionFragments = fragments;
+    if (fragments.isNotEmpty) {
+      markNeedsCompositingBitsUpdate();
+    }
+    _selectionText = document.text;
+    delegate.layoutDidChange();
   }
 }
 
@@ -943,6 +1029,75 @@ class MarkdownPainter {
     return _size = Size(width, height);
   }
 
+  int? _blockIndexAt(Offset position) {
+    if (_blockPainters.isEmpty ||
+        position.dy < 0 ||
+        position.dy > _size.height) {
+      return null;
+    }
+    var min = 0;
+    var max = _blockPainters.length;
+    var index = 0;
+    while (min < max) {
+      final mid = min + ((max - min) >> 1);
+      if (_blockOffsets[mid] <= position.dy) {
+        index = mid;
+        min = mid + 1;
+      } else {
+        max = mid;
+      }
+    }
+    return index;
+  }
+
+  HitTestTarget? hitTestLink(Offset position) {
+    final index = _blockIndexAt(position);
+    if (index == null) return null;
+    final blockPainter = _blockPainters[index];
+    final painter = _unwrapAnimatedPainter(blockPainter);
+    final blockPosition = Offset(
+      position.dx,
+      position.dy -
+          _blockOffsets[index] -
+          _animatedVerticalOffset(blockPainter),
+    );
+
+    InlineSpan? span;
+    switch (painter) {
+      case BlockPainter$Paragraph(:final painter):
+      case BlockPainter$Heading(:final painter):
+        span = _hitTestTextPainter(painter, blockPosition);
+      case BlockPainter$Quote(
+          :final painter,
+          :final indent,
+        ):
+        span = _hitTestTextPainter(
+          painter,
+          blockPosition -
+              Offset(
+                BlockPainter$Quote.lineIndent +
+                    indent * BlockPainter$Quote.lineIndent,
+                0,
+              ),
+        );
+      case BlockPainter$List():
+        span = painter._getSpanForPosition(blockPosition);
+      case BlockPainter$Table():
+        span = painter._getSpanForOffset(blockPosition);
+      case BlockPainter$Code():
+      case BlockPainter$Spacer():
+      case BlockPainter$Divider():
+        break;
+      default:
+        break;
+    }
+
+    if (span case TextSpan(recognizer: GestureRecognizer())) {
+      return span as HitTestTarget;
+    }
+    return null;
+  }
+
   /// Get the painter from the array by the vertical local position (dy).
   /// 通过垂直本地位置 (dy) 从数组中获取绘制器
   /* static BlockPainter? _getPainterByHeight(
@@ -971,38 +1126,20 @@ class MarkdownPainter {
     if (event is! PointerDownEvent && event is! PointerUpEvent) return;
 
     final pos = event.localPosition;
+    final idx = _blockIndexAt(pos);
+    if (idx == null) return;
+    final rawPainter = _unwrapAnimatedPainter(_blockPainters[idx]);
+    if (rawPainter is BlockPainter$Paragraph ||
+        rawPainter is BlockPainter$Heading ||
+        rawPainter is BlockPainter$Quote ||
+        rawPainter is BlockPainter$List ||
+        rawPainter is BlockPainter$Code ||
+        rawPainter is BlockPainter$Spacer ||
+        rawPainter is BlockPainter$Divider ||
+        rawPainter is BlockPainter$Table) {
+      return;
+    }
     {
-      // Binary search to find the block painter by the vertical position.
-      // 通过二分查找根据垂直位置找到块绘制器
-      final dy = pos.dy;
-      var min = 0;
-      var max = _blockPainters.length;
-      var idx = 0;
-      while (min < max) {
-        final mid = min + ((max - min) >> 1);
-        final offset = _blockOffsets[mid];
-        //final comp = offset.compareTo(dy);
-        var comp = 0;
-        if (offset > dy) {
-          // The offset is greater than the position.
-          // 偏移量大于位置
-          comp = 1;
-        } else {
-          idx = mid; // Remember the index of the block painter.
-          // 记住块绘制器的索引
-          // The offset is less than or equal to the position.
-          // 偏移量小于或等于位置
-          comp = offset < dy ? -1 : 0;
-        }
-        if (comp == 0) {
-          break; // Found the exact match.
-          // 找到精确匹配
-        } else if (comp < 0) {
-          min = mid + 1;
-        } else {
-          max = mid;
-        }
-      }
       switch (event) {
         case PointerDownEvent():
           final blockTapEvent = PointerDownEvent(
@@ -1159,6 +1296,222 @@ class MarkdownPainter {
     }
   }
 
+  ({String text, List<MarkdownSelectionFragmentDescriptor> descriptors})
+      selectionDocument() {
+    final descriptors = <MarkdownSelectionFragmentDescriptor>[];
+    var pendingPrefix = '';
+    var hasDocumentText = false;
+    var endsWithNewline = false;
+
+    void appendStructuralText(String text) {
+      if (text.isEmpty) return;
+      if (descriptors.isEmpty) {
+        pendingPrefix += text;
+      } else {
+        descriptors.last.suffix += text;
+      }
+      hasDocumentText = true;
+      endsWithNewline = text.endsWith('\n');
+    }
+
+    for (var blockIndex = 0; blockIndex < _blockPainters.length; blockIndex++) {
+      final blockPainter = _blockPainters[blockIndex];
+      final rawPainter = _unwrapAnimatedPainter(blockPainter);
+
+      if (rawPainter case BlockPainter$Spacer(:final count)) {
+        if (hasDocumentText && !endsWithNewline) {
+          appendStructuralText('\n');
+        }
+        appendStructuralText('\n' * count);
+        continue;
+      }
+      if (rawPainter is BlockPainter$Divider) {
+        appendStructuralText('\n');
+        continue;
+      }
+
+      final blockDescriptors = _selectionDescriptorsFor(
+        rawPainter,
+        blockPainter: blockPainter,
+        blockIndex: blockIndex,
+      ).toList();
+      blockDescriptors.removeWhere(
+        (descriptor) => descriptor.visibleText.isEmpty,
+      );
+      if (blockDescriptors.isEmpty) continue;
+
+      if (hasDocumentText && !endsWithNewline) {
+        appendStructuralText('\n');
+      }
+      if (pendingPrefix.isNotEmpty) {
+        blockDescriptors.first.prefix =
+            '$pendingPrefix${blockDescriptors.first.prefix}';
+        pendingPrefix = '';
+      }
+
+      descriptors.addAll(blockDescriptors);
+      hasDocumentText = true;
+      endsWithNewline = descriptors.last.text.endsWith('\n');
+    }
+
+    if (pendingPrefix.isNotEmpty && descriptors.isNotEmpty) {
+      descriptors.last.suffix += pendingPrefix;
+    }
+
+    return (
+      text: descriptors.map((descriptor) => descriptor.text).join(),
+      descriptors: descriptors,
+    );
+  }
+
+  List<MarkdownSelectionFragmentDescriptor> _selectionDescriptorsFor(
+    BlockPainter painter, {
+    required BlockPainter blockPainter,
+    required int blockIndex,
+  }) {
+    Offset Function() offsetFor(Offset localOffset) => () => Offset(
+          localOffset.dx,
+          _blockOffsets[blockIndex] +
+              localOffset.dy +
+              _animatedVerticalOffset(blockPainter),
+        );
+
+    MarkdownSelectionFragmentDescriptor descriptor(
+      TextPainter textPainter,
+      Offset localOffset, {
+      String prefix = '',
+      String suffix = '',
+    }) =>
+        MarkdownSelectionFragmentDescriptor(
+          painter: textPainter,
+          paintOffset: offsetFor(localOffset),
+          prefix: prefix,
+          suffix: suffix,
+        );
+
+    switch (painter) {
+      case BlockPainter$Paragraph(:final painter):
+        return <MarkdownSelectionFragmentDescriptor>[
+          descriptor(painter, Offset.zero),
+        ];
+      case BlockPainter$Heading(:final painter):
+        return <MarkdownSelectionFragmentDescriptor>[
+          descriptor(painter, Offset.zero),
+        ];
+      case BlockPainter$Quote(
+          :final painter,
+          :final indent,
+        ):
+        return <MarkdownSelectionFragmentDescriptor>[
+          descriptor(
+            painter,
+            Offset(
+              BlockPainter$Quote.lineIndent +
+                  indent * BlockPainter$Quote.lineIndent,
+              0,
+            ),
+          ),
+        ];
+      case BlockPainter$List(:final _painters):
+        final result = <MarkdownSelectionFragmentDescriptor>[];
+        for (var index = 0; index < _painters.length; index++) {
+          final metrics = _painters[index];
+          result
+            ..add(
+              descriptor(
+                metrics.bulletPainter,
+                metrics.offset,
+                prefix: metrics.copyIndent,
+              ),
+            )
+            ..add(
+              descriptor(
+                metrics.contentPainter,
+                metrics.offset + Offset(metrics.bulletPainter.width, 0),
+                suffix: index == _painters.length - 1 ? '' : '\n',
+              ),
+            );
+        }
+        return result;
+      case BlockPainter$Code(
+          :final painter,
+          :final languagePainter,
+          :final _padding,
+          :final _topSpacing,
+          :final _languageGap,
+        ):
+        final labelHeight = languagePainter?.height ?? 0;
+        final gap = labelHeight > 0 && painter.height > 0 ? _languageGap : 0;
+        return <MarkdownSelectionFragmentDescriptor>[
+          descriptor(
+            painter,
+            Offset(
+              _padding.left,
+              _topSpacing + _padding.top + labelHeight + gap,
+            ),
+          ),
+        ];
+      case BlockPainter$Table(
+          :final _cellPainters,
+          :final _rowHeights,
+          :final _columnWidths,
+          :final _cellPadding,
+          :final _topSpacing,
+        ):
+        final result = <MarkdownSelectionFragmentDescriptor>[];
+        var currentY = _topSpacing;
+        for (var row = 0; row < _cellPainters.length; row++) {
+          var currentX = 0.0;
+          for (var column = 0; column < _cellPainters[row].length; column++) {
+            final textPainter = _cellPainters[row][column];
+            final columnWidth = _columnWidths[column];
+            final verticalPadding = (_rowHeights[row] - textPainter.height) / 2;
+            final horizontalPadding = row == 0
+                ? (columnWidth - textPainter.width) / 2
+                : _cellPadding.left;
+            final isLastColumn = column == _cellPainters[row].length - 1;
+            final isLastRow = row == _cellPainters.length - 1;
+            result.add(
+              descriptor(
+                textPainter,
+                Offset(
+                  currentX + horizontalPadding,
+                  currentY + verticalPadding,
+                ),
+                suffix: isLastColumn ? (isLastRow ? '' : '\n') : '\t',
+              ),
+            );
+            currentX += columnWidth;
+          }
+          currentY += _rowHeights[row];
+        }
+        return result;
+      case BlockPainter$Spacer():
+      case BlockPainter$Divider():
+        return const <MarkdownSelectionFragmentDescriptor>[];
+      default:
+        return const <MarkdownSelectionFragmentDescriptor>[];
+    }
+  }
+
+  static BlockPainter _unwrapAnimatedPainter(BlockPainter painter) {
+    var result = painter;
+    while (result is AnimatedBlockPainter) {
+      result = result.inner;
+    }
+    return result;
+  }
+
+  static double _animatedVerticalOffset(BlockPainter painter) {
+    var result = 0.0;
+    var current = painter;
+    while (current is AnimatedBlockPainter) {
+      result += current.offsetAnimation?.value ?? 0;
+      current = current.inner;
+    }
+    return result;
+  }
+
   void dispose() {
     _lastPicture?.dispose();
     _lastPicture = null;
@@ -1225,6 +1578,16 @@ TapGestureRecognizer? _buildTapRecognizer(
       };
   }
   return null;
+}
+
+InlineSpan? _hitTestTextPainter(TextPainter painter, Offset position) {
+  final glyph = painter.getClosestGlyphForOffset(position);
+  if (glyph == null || !glyph.graphemeClusterLayoutBounds.contains(position)) {
+    return null;
+  }
+  return painter.text?.getSpanForPosition(
+    TextPosition(offset: glyph.graphemeClusterCodeUnitRange.start),
+  );
 }
 
 /// Helper function to create a [TextSpan] from markdown spans.
@@ -1308,14 +1671,10 @@ mixin ParagraphGestureHandler {
   /// 使用 [TextPainter] 处理点击事件
   @protected
   InlineSpan? hitTestInlineSpanWithPointerEvent(
-      PointerEvent event, TextPainter painter) {
-    final pos = painter.getPositionForOffset(event.localPosition);
-    //final int index = pos.offset;
-    final span = painter.text?.getSpanForPosition(pos);
-    //final plainText = span?.toPlainText();
-    //print('[${pos.offset}] $plainText');
-    return span;
-  }
+    PointerEvent event,
+    TextPainter painter,
+  ) =>
+      _hitTestTextPainter(painter, event.localPosition);
 }
 
 /// A class for painting a paragraph block in markdown.
@@ -1608,11 +1967,13 @@ class _ListItemMetrics {
     required this.bulletPainter,
     required this.contentPainter,
     required this.offset,
+    required this.copyIndent,
   });
 
   final TextPainter bulletPainter;
   final TextPainter contentPainter;
   final Offset offset;
+  final String copyIndent;
 
   late final double height =
       math.max(bulletPainter.height, contentPainter.height);
@@ -1662,9 +2023,10 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
       final contentRect = contentOffset & metrics.contentPainter.size;
       if (contentRect.contains(localPosition)) {
         final painterPosition = localPosition - contentOffset;
-        final textPosition =
-            metrics.contentPainter.getPositionForOffset(painterPosition);
-        return metrics.contentPainter.text?.getSpanForPosition(textPosition);
+        return _hitTestTextPainter(
+          metrics.contentPainter,
+          painterPosition,
+        );
       }
     }
     return null;
@@ -1729,6 +2091,7 @@ class BlockPainter$List with ParagraphGestureHandler implements BlockPainter {
           bulletPainter: bulletPainter,
           contentPainter: contentPainter,
           offset: Offset(indent, currentHeight),
+          copyIndent: '  ' * level,
         );
         _painters.add(metrics);
 
@@ -2116,7 +2479,7 @@ class BlockPainter$Code implements BlockPainter {
 
     canvas.drawRRect(blockRRect, _backgroundPaint);
     if (_borderPaint != null) {
-      canvas.drawRRect(blockRRect, _borderPaint!);
+      canvas.drawRRect(blockRRect, _borderPaint);
     }
 
     var currentY = offset + _topSpacing + _padding.top;
@@ -2284,8 +2647,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
               continue;
             }
 
-            final textPosition = painter.getPositionForOffset(localPosition);
-            final span = painter.text!.getSpanForPosition(textPosition);
+            final span = _hitTestTextPainter(painter, localPosition);
             if (span is TextSpan) {
               return span;
             }
