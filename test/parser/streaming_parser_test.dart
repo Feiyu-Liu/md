@@ -78,6 +78,20 @@ void main() => group('StreamingMarkdownDecoder', () {
           );
         });
 
+        test('chunk by chunk tilde fence keeps mismatched fences as code', () {
+          final decoder = StreamingMarkdownDecoder();
+
+          decoder.append('~~~~dart\n');
+          decoder.append('```\nnot prose\n~~~\n');
+          expect(decoder.firstOpenIndex, 0);
+
+          decoder.append('~~~~\n');
+
+          final code = decoder.build().blocks.single as MD$Code;
+          expect(code.text, '```\nnot prose\n~~~');
+          expect(code.language, 'dart');
+        });
+
         test('mixed content streaming', () {
           final decoder = StreamingMarkdownDecoder();
 

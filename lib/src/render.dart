@@ -24,6 +24,7 @@ import 'animation/animated_block_painter.dart';
 import 'animation/animation_config.dart';
 import 'markdown.dart';
 import 'nodes.dart';
+import 'parser.dart' show MarkdownBlockId;
 import 'selection.dart';
 import 'theme.dart';
 
@@ -36,6 +37,8 @@ class MarkdownRenderObject extends RenderBox
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
     VoidCallback? onAnimationComplete,
+    List<MarkdownBlockId>? blockIds,
+    Map<MarkdownBlockId, String>? replacementValues,
     MarkdownSelectionDelegate? selectionDelegate,
     Color selectionColor = const Color(0x6633B5E5),
   })  : _animationConfig = animationConfig,
@@ -48,6 +51,8 @@ class MarkdownRenderObject extends RenderBox
           theme: theme,
           animationConfig: animationConfig,
           isStreamingComplete: isStreamingComplete,
+          blockIds: blockIds,
+          replacementValues: replacementValues,
         ) {
     // Set the animation complete callback after construction
     // 在构造后设置动画完成回调
@@ -103,6 +108,24 @@ class MarkdownRenderObject extends RenderBox
             rect.shift(fragment.descriptor.paintOffset()),
       ];
 
+  @visibleForTesting
+  Set<MarkdownBlockId> get debugAnimatingBlockIds => _painter.animatingBlockIds;
+
+  @visibleForTesting
+  double? debugAnimationValueForBlock(MarkdownBlockId id) =>
+      _painter.animationValueForBlock(id);
+
+  @visibleForTesting
+  String get debugPlainText => _painter.plainText;
+
+  @visibleForTesting
+  int get debugAnimationControllerCount => _painter.controllerCount;
+
+  @visibleForTesting
+  int get debugUniqueAnimationControllerCount => _painter.uniqueControllerCount;
+
+  Rect? blockBoundsForId(MarkdownBlockId id) => _painter.blockBoundsForId(id);
+
   @override
   RenderObject get selectionRenderObject => this;
 
@@ -134,6 +157,7 @@ class MarkdownRenderObject extends RenderBox
       // 创建当前配置的禁用版本
       _animationConfig = MarkdownAnimationConfig(
         enabled: false,
+        mode: _animationConfig.mode,
         duration: _animationConfig.duration,
         curve: _animationConfig.curve,
         opacityRange: _animationConfig.opacityRange,
@@ -252,9 +276,7 @@ class MarkdownRenderObject extends RenderBox
 
     // Initialize the painter with TickerProvider if animation is enabled
     // 如果启用了动画，则使用 TickerProvider 初始化绘制器
-    if (_animationConfig.enabled) {
-      _painter.initializeAnimations(this);
-    }
+    _painter.initializeAnimations(this);
   }
 
   /// Updates the render object with a new values.
@@ -268,6 +290,8 @@ class MarkdownRenderObject extends RenderBox
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
     VoidCallback? onAnimationComplete,
+    List<MarkdownBlockId>? blockIds,
+    Map<MarkdownBlockId, String>? replacementValues,
     MarkdownSelectionDelegate? selectionDelegate,
     Color selectionColor = const Color(0x6633B5E5),
   }) {
@@ -292,6 +316,7 @@ class MarkdownRenderObject extends RenderBox
     if (_animationDisabledByCompletion && animationConfig.disableOnComplete) {
       effectiveConfig = MarkdownAnimationConfig(
         enabled: false,
+        mode: animationConfig.mode,
         duration: animationConfig.duration,
         curve: animationConfig.curve,
         opacityRange: animationConfig.opacityRange,
@@ -303,7 +328,7 @@ class MarkdownRenderObject extends RenderBox
 
     _animationConfig = effectiveConfig;
 
-    // Update the painter callback to ensure it always points to the current method
+    // Keep the painter callback pointed at the current render object method.
     // 更新绘制器回调以确保它始终指向当前方法
     _painter.onAnimationComplete = _handleAnimationComplete;
 
@@ -312,6 +337,8 @@ class MarkdownRenderObject extends RenderBox
       theme: theme,
       animationConfig: effectiveConfig,
       isStreamingComplete: isStreamingComplete,
+      blockIds: blockIds,
+      replacementValues: replacementValues,
     )) {
       // Mark the render object as needing layout.
       // 将渲染对象标记为需要重新布局
@@ -440,10 +467,14 @@ class MarkdownPainter {
     required MarkdownThemeData theme,
     this.animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
+    List<MarkdownBlockId>? blockIds,
+    Map<MarkdownBlockId, String>? replacementValues,
     this.onAnimationComplete,
   })  : _markdown = markdown,
         _theme = theme,
         _isStreamingComplete = isStreamingComplete,
+        _blockIds = blockIds,
+        _replacementValues = replacementValues,
         _isEmpty = _getClosedBlocks(markdown, isStreamingComplete).isEmpty,
         _size = Size.zero {
     _lastClosedSignature = _closedBlocksSignature(
@@ -452,7 +483,7 @@ class MarkdownPainter {
     _rebuild();
   }
 
-  /// Callback invoked when animations should be disabled after streaming completes.
+  /// Called when animations should be disabled after streaming completes.
   /// 当流式完成后应禁用动画时调用的回调
   ///
   /// This is called when:
@@ -471,6 +502,12 @@ class MarkdownPainter {
   /// Notifier indicating whether streaming is complete.
   /// 流式输出是否完成的通知器
   ValueNotifier<bool>? _isStreamingComplete;
+
+  List<MarkdownBlockId>? _blockIds;
+  Map<MarkdownBlockId, String>? _replacementValues;
+  Map<MarkdownBlockId, String>? _previousReplacementValues;
+  List<MarkdownBlockId>? _renderedBlockIds;
+  List<MarkdownBlockId>? _renderedBlockIdsBeforeRebuild;
 
   /// Get closed blocks based on streaming state.
   /// 根据流式输出状态获取已闭合的块
@@ -557,10 +594,50 @@ class MarkdownPainter {
   bool get hasActiveAnimations =>
       animationConfig.enabled && _controllers.any((c) => c.isAnimating);
 
+  int get controllerCount => _controllers.length;
+  int get uniqueControllerCount => _controllers.toSet().length;
+
+  Set<MarkdownBlockId> get animatingBlockIds {
+    final ids = _renderedBlockIdsBeforeRebuild;
+    if (ids == null || ids.length != _controllers.length) {
+      return const <MarkdownBlockId>{};
+    }
+    return <MarkdownBlockId>{
+      for (var index = 0; index < ids.length; index++)
+        if (_controllers[index].isAnimating) ids[index],
+    };
+  }
+
+  double? animationValueForBlock(MarkdownBlockId id) {
+    final ids = _renderedBlockIdsBeforeRebuild;
+    if (ids == null) return null;
+    final index = ids.indexOf(id);
+    return index < 0 ? null : _controllers[index].value;
+  }
+
+  Rect? blockBoundsForId(MarkdownBlockId id) {
+    final ids = _renderedBlockIds;
+    if (ids == null ||
+        ids.length != _blockPainters.length ||
+        _blockOffsets.length != _blockPainters.length) {
+      return null;
+    }
+    Rect? result;
+    for (var index = 0; index < ids.length; index++) {
+      if (ids[index] != id) continue;
+      final block = _blockPainters[index];
+      final rect = Offset(0, _blockOffsets[index]) & block.size;
+      result = result == null ? rect : result.expandToInclude(rect);
+    }
+    return result;
+  }
+
   /// Is the markdown entity empty?
   /// Markdown 实体是否为空？
   bool get isEmpty => _isEmpty;
   bool _isEmpty;
+
+  String get plainText => _markdown.text;
 
   /// Current markdown entity to render.
   /// 要渲染的当前 Markdown 实体
@@ -629,6 +706,52 @@ class MarkdownPainter {
         ),
       );
 
+  ({List<MD$Block> blocks, List<MarkdownBlockId>? ids})
+      _filteredBlocksToRender() {
+    final isReplacement =
+        animationConfig.mode == MarkdownAnimationMode.contentReplacement;
+    final sourceBlocks = isReplacement
+        ? _markdown.blocks
+        : animationConfig.enabled
+            ? _getClosedBlocks(_markdown, _isStreamingComplete)
+            : _markdown.blocks;
+    final sourceIds = isReplacement ? _blockIds : null;
+    assert(sourceIds == null || sourceIds.length == sourceBlocks.length);
+    final filter = _theme.blockFilter;
+    if (filter == null) {
+      return (blocks: sourceBlocks, ids: sourceIds);
+    }
+    final blocks = <MD$Block>[];
+    final ids = sourceIds == null ? null : <MarkdownBlockId>[];
+    for (var index = 0; index < sourceBlocks.length; index++) {
+      final block = sourceBlocks[index];
+      if (!filter(block)) continue;
+      blocks.add(block);
+      ids?.add(sourceIds![index]);
+    }
+    return (blocks: blocks, ids: ids);
+  }
+
+  void _disposeAnimationControllers() {
+    for (final controller in _controllers.toSet()) {
+      controller.dispose();
+    }
+    _controllers = <AnimationController>[];
+    _opacityAnimations = <Animation<double>?>[];
+    _offsetAnimations = <Animation<double>?>[];
+    _blurAnimations = <Animation<double>?>[];
+  }
+
+  void _disposeReplacedBlockPainters(List<BlockPainter> replacements) {
+    for (final painter in _blockPainters) {
+      final rawPainter = _unwrapAnimatedPainter(painter);
+      final retained = replacements.any(
+        (replacement) => identical(replacement, rawPainter),
+      );
+      if (!retained) painter.dispose();
+    }
+  }
+
   /// Initialize animations with a TickerProvider.
   /// 使用 TickerProvider 初始化动画
   void initializeAnimations(TickerProvider vsync) {
@@ -650,38 +773,29 @@ class MarkdownPainter {
 
     // Only render closed blocks when animation is enabled
     // 启用动画时只渲染已闭合的块
-    final blocksToRender = animationConfig.enabled
-        ? _getClosedBlocks(_markdown, _isStreamingComplete)
-        : _markdown.blocks;
+    final renderData = _filteredBlocksToRender();
+    final blocksToRender = renderData.blocks;
+    _renderedBlockIds = renderData.ids;
 
     _isEmpty = blocksToRender.isEmpty;
 
-    final filter = _theme.blockFilter;
-    final filteredBlocks =
-        (filter != null ? blocksToRender.where(filter) : blocksToRender)
-            .toList(growable: false);
     final builder = _theme.builder;
 
     // Create raw painters
-    final rawPainters = filteredBlocks
+    final rawPainters = blocksToRender
         .map<BlockPainter>(
           (block) =>
               builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
+    _disposeReplacedBlockPainters(rawPainters);
 
     // Wrap with animation if enabled and vsync is available
     if (animationConfig.enabled && _vsync != null) {
       _rebuildWithAnimations(rawPainters);
     } else {
       // Dispose old controllers if any
-      for (final controller in _controllers) {
-        controller.dispose();
-      }
-      _controllers = [];
-      _opacityAnimations = [];
-      _offsetAnimations = [];
-      _blurAnimations = [];
+      _disposeAnimationControllers();
       _blockPainters = rawPainters;
     }
 
@@ -693,21 +807,20 @@ class MarkdownPainter {
   void _rebuildAnimations() {
     if (_vsync == null || !animationConfig.enabled) return;
 
-    final blocksToRender = _getClosedBlocks(_markdown, _isStreamingComplete);
+    final renderData = _filteredBlocksToRender();
+    final blocksToRender = renderData.blocks;
+    _renderedBlockIds = renderData.ids;
     _isEmpty = blocksToRender.isEmpty;
 
-    final filter = _theme.blockFilter;
-    final filteredBlocks =
-        (filter != null ? blocksToRender.where(filter) : blocksToRender)
-            .toList(growable: false);
     final builder = _theme.builder;
 
-    final rawPainters = filteredBlocks
+    final rawPainters = blocksToRender
         .map<BlockPainter>(
           (block) =>
               builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
+    _disposeReplacedBlockPainters(rawPainters);
 
     _rebuildWithAnimations(rawPainters);
     _blockOffsets = Float32List(_blockPainters.length);
@@ -717,12 +830,16 @@ class MarkdownPainter {
   /// Rebuild painters with animation wrappers.
   /// 使用动画包装器重建绘制器
   void _rebuildWithAnimations(List<BlockPainter> rawPainters) {
+    if (animationConfig.mode == MarkdownAnimationMode.contentReplacement) {
+      _rebuildContentReplacementAnimations(rawPainters);
+      return;
+    }
     final oldCount = _controllers.length;
     final newCount = rawPainters.length;
 
     // Check if this is a rebuild of an already completed message
     // If streaming is complete and we have no existing controllers,
-    // this means the RenderObject was recreated for an already completed message.
+    // the RenderObject was recreated for an already completed message.
     // In this case, we should NOT play animations.
     // 检查这是否是已完成消息的重建
     // 如果流式已完成且没有现有控制器，说明 RenderObject 是为已完成的消息重新创建的
@@ -836,7 +953,7 @@ class MarkdownPainter {
     // 为新闭合的 blocks 启动动画
     // 但如果这是已完成消息的重建，则跳过
     if (isRebuildOfCompletedMessage) {
-      // For completed messages being rebuilt, set all controllers to completed state
+      // Completed messages rebuild with controllers at their end value.
       // 对于正在重建的已完成消息，将所有控制器设置为完成状态
       for (var i = 0; i < newCount; i++) {
         _controllers[i].value = 1.0; // Set to end value without animation
@@ -864,7 +981,91 @@ class MarkdownPainter {
     _handleStreamingCompletionAndAutoDisable();
   }
 
-  /// Handles streaming completion detection and adds completion listener to last animation.
+  void _rebuildContentReplacementAnimations(List<BlockPainter> rawPainters) {
+    final ids = _renderedBlockIds;
+    if (ids == null || ids.length != rawPainters.length) {
+      _disposeAnimationControllers();
+      _blockPainters = rawPainters;
+      return;
+    }
+
+    final oldControllers = <MarkdownBlockId, AnimationController>{};
+    final oldIds = _renderedBlockIdsBeforeRebuild;
+    if (oldIds != null && oldIds.length == _controllers.length) {
+      for (var index = 0; index < oldIds.length; index++) {
+        oldControllers.putIfAbsent(oldIds[index], () => _controllers[index]);
+      }
+    }
+
+    final controllersById = <MarkdownBlockId, AnimationController>{};
+    for (final id in ids) {
+      controllersById.putIfAbsent(
+        id,
+        () =>
+            oldControllers[id] ??
+            AnimationController(
+              duration: animationConfig.duration,
+              vsync: _vsync!,
+              value: 1,
+            ),
+      );
+    }
+    for (final entry in oldControllers.entries) {
+      if (!controllersById.containsKey(entry.key)) entry.value.dispose();
+    }
+
+    _controllers = <AnimationController>[
+      for (final id in ids) controllersById[id]!,
+    ];
+    for (final controller in controllersById.values) {
+      controller.duration = animationConfig.duration;
+    }
+    Animation<double>? rangeAnimation(
+      AnimationController controller,
+      AnimationRange? range,
+    ) =>
+        range == null
+            ? null
+            : Tween<double>(begin: range.start, end: range.end).animate(
+                CurvedAnimation(
+                    parent: controller, curve: animationConfig.curve),
+              );
+
+    _opacityAnimations = <Animation<double>?>[
+      for (final controller in _controllers)
+        rangeAnimation(controller, animationConfig.opacityRange),
+    ];
+    _offsetAnimations = <Animation<double>?>[
+      for (final controller in _controllers)
+        rangeAnimation(controller, animationConfig.offsetRange),
+    ];
+    _blurAnimations = <Animation<double>?>[
+      for (final controller in _controllers)
+        rangeAnimation(controller, animationConfig.blurRange),
+    ];
+    _blockPainters = <BlockPainter>[
+      for (var index = 0; index < rawPainters.length; index++)
+        AnimatedBlockPainter(
+          inner: rawPainters[index],
+          opacityAnimation: _opacityAnimations[index],
+          offsetAnimation: _offsetAnimations[index],
+          blurAnimation: _blurAnimations[index],
+        ),
+    ];
+
+    final previous = _previousReplacementValues;
+    final current = _replacementValues;
+    if (previous != null && current != null) {
+      for (final entry in controllersById.entries) {
+        if (previous[entry.key] != current[entry.key]) {
+          entry.value.forward(from: 0);
+        }
+      }
+    }
+    _renderedBlockIdsBeforeRebuild = List<MarkdownBlockId>.of(ids);
+  }
+
+  /// Detects streaming completion and observes the last animation.
   /// 处理流式完成检测并向最后一个动画添加完成监听器
   void _handleStreamingCompletionAndAutoDisable() {
     // Check if streaming is complete and disableOnComplete is enabled
@@ -937,13 +1138,24 @@ class MarkdownPainter {
     required MarkdownThemeData theme,
     MarkdownAnimationConfig animationConfig = MarkdownAnimationConfig.disabled,
     ValueNotifier<bool>? isStreamingComplete,
+    List<MarkdownBlockId>? blockIds,
+    Map<MarkdownBlockId, String>? replacementValues,
   }) {
+    final modeChanged = this.animationConfig.mode != animationConfig.mode;
     final configChanged = this.animationConfig != animationConfig;
     final streamingCompleteChanged =
         _isStreamingComplete != isStreamingComplete;
 
+    if (modeChanged) {
+      _disposeAnimationControllers();
+      _renderedBlockIdsBeforeRebuild = null;
+    }
     this.animationConfig = animationConfig;
     _isStreamingComplete = isStreamingComplete;
+    _previousReplacementValues =
+        modeChanged ? replacementValues : _replacementValues;
+    _replacementValues = replacementValues;
+    _blockIds = blockIds;
 
     // Check if closed block count changed (for animation)
     final oldClosedCount = _lastClosedCount;
@@ -995,6 +1207,7 @@ class MarkdownPainter {
     for (final painter in _blockPainters) {
       painter.dispose();
     }
+    _blockPainters = const <BlockPainter>[];
     _rebuild();
   }
 
@@ -1518,13 +1731,7 @@ class MarkdownPainter {
 
     // Dispose all animation controllers
     // 释放所有动画控制器
-    for (final controller in _controllers) {
-      controller.dispose();
-    }
-    _controllers = [];
-    _opacityAnimations = [];
-    _offsetAnimations = [];
-    _blurAnimations = [];
+    _disposeAnimationControllers();
 
     for (final painter in _blockPainters) {
       painter.dispose();
@@ -2805,7 +3012,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     for (int r = 0; r < _cellPainters.length; r++) {
       double currentX = 0;
 
-      if (r == 0 && _headerBackgroundPaint.color.alpha != 0) {
+      if (r == 0 && _headerBackgroundPaint.color.a > 0) {
         canvas.drawRect(
           Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
           _headerBackgroundPaint,
@@ -2858,7 +3065,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
     // Draw outer borders
     // 绘制外部边框
-    if (_borderPaint.color.alpha != 0 && _borderPaint.strokeWidth > 0) {
+    if (_borderPaint.color.a > 0 && _borderPaint.strokeWidth > 0) {
       canvas.drawRRect(tableRRect, _borderPaint);
     }
   }

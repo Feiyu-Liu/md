@@ -142,8 +142,15 @@ class AnimatedBlockPainter implements BlockPainter {
         paint.color = Color.fromRGBO(255, 255, 255, opacity);
       }
 
-      // Use bounds to optimize the layer size
-      canvas.saveLayer(Offset.zero & size, paint);
+      // Restrict the layer to this block while retaining enough room for blur.
+      final blurOutset = blurSigma * 3;
+      final layerBounds = Rect.fromLTRB(
+        -blurOutset,
+        offset - blurOutset,
+        size.width + blurOutset,
+        offset + inner.size.height + blurOutset,
+      );
+      canvas.saveLayer(layerBounds, paint);
       inner.paint(canvas, size, offset);
       canvas.restore();
     } else {

@@ -3,8 +3,12 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
+
 import 'markdown.dart';
 import 'nodes.dart';
+
+part 'source_parser.dart';
 
 /// Decodes Markdown formatted strings
 /// into a list of [MD$Block] objects.
@@ -53,12 +57,48 @@ final RegExp _headerPattern = RegExp(r'^(#{1,6})');
 final RegExp _listPattern = RegExp(
     r'^(?<indent>[ \t]{0,8})(?<marker>(\d{1,9})[\.)]|[*+-])(?<text>[ \t]+(.*))?$');
 
+({String character, int length, String info})? _openingFence(String line) {
+  if (line.length < 3) return null;
+  final character = line[0];
+  if (character != '`' && character != '~') return null;
+  var length = 1;
+  while (length < line.length && line[length] == character) {
+    length++;
+  }
+  if (length < 3) return null;
+  return (
+    character: character,
+    length: length,
+    info: line.substring(length).trim(),
+  );
+}
+
+bool _isClosingFence(
+  String line, {
+  required String character,
+  required int openingLength,
+}) {
+  if (line.length < openingLength || line[0] != character) return false;
+  var length = 1;
+  while (length < line.length && line[length] == character) {
+    length++;
+  }
+  return length >= openingLength && line.substring(length).trim().isEmpty;
+}
+
 /// Callback type for when a block is closed (lines [start] to [end] exclusive).
 typedef OnBlockClosed = void Function(int start, int end);
 
 /// Callback type for when a code block is found but not closed.
 /// Returns true to continue parsing, false to break.
 typedef OnCodeBlockOpen = bool Function(int startLine, String language);
+
+/// Callback type for each parsed block and its source line range.
+typedef _OnBlockParsed = void Function(
+  MD$Block block,
+  int startLine,
+  int endLine,
+);
 
 /// Result of parsing markdown lines.
 class _ParseResult {
@@ -90,24 +130,30 @@ _ParseResult _parseMarkdownLines({
   List<MD$Block>? existingBlocks,
   OnBlockClosed? onBlockClosed,
   OnCodeBlockOpen? onCodeBlockOpen,
+  _OnBlockParsed? onBlockParsed,
 }) {
   final blocks = existingBlocks ?? <MD$Block>[];
   final paragraph = StringBuffer();
+  var paragraphStart = -1;
   var hasOpenCodeBlock = false;
 
-  void maybeCommitParagraph() {
+  void maybeCommitParagraph(int endLine) {
     if (paragraph.isEmpty) return;
     final text = paragraph.toString();
     paragraph.clear();
-    blocks.add(MD$Paragraph(
+    final block = MD$Paragraph(
       text: text,
       spans: _parseInlineSpans(text),
-    ));
+    );
+    blocks.add(block);
+    onBlockParsed?.call(block, paragraphStart, endLine);
+    paragraphStart = -1;
   }
 
-  void pushBlock(MD$Block block) {
-    maybeCommitParagraph();
+  void pushBlock(MD$Block block, int startLine, int endLine) {
+    maybeCommitParagraph(startLine);
     blocks.add(block);
+    onBlockParsed?.call(block, startLine, endLine);
   }
 
   var i = startIndex;
@@ -124,7 +170,7 @@ _ParseResult _parseMarkdownLines({
         onBlockClosed?.call(i, j);
       }
 
-      pushBlock(MD$Spacer(count: count));
+      pushBlock(MD$Spacer(count: count), i, j);
       if (i + count == length) break;
       i = j - 1;
       continue;
@@ -135,7 +181,7 @@ _ParseResult _parseMarkdownLines({
       if (i + 1 < length) {
         onBlockClosed?.call(i, i + 1);
       }
-      pushBlock(const MD$Divider());
+      pushBlock(const MD$Divider(), i, i + 1);
       continue;
     }
 
@@ -149,11 +195,15 @@ _ParseResult _parseMarkdownLines({
         onBlockClosed?.call(i, i + 1);
       }
 
-      pushBlock(MD$Heading(
-        level: level,
-        text: text,
-        spans: _parseInlineSpans(text),
-      ));
+      pushBlock(
+        MD$Heading(
+          level: level,
+          text: text,
+          spans: _parseInlineSpans(text),
+        ),
+        i,
+        i + 1,
+      );
       continue;
     }
 
@@ -173,11 +223,15 @@ _ParseResult _parseMarkdownLines({
         onBlockClosed?.call(i, j);
       }
 
-      pushBlock(MD$Quote(
-        indent: 1,
-        text: text,
-        spans: _parseInlineSpans(text),
-      ));
+      pushBlock(
+        MD$Quote(
+          indent: 1,
+          text: text,
+          spans: _parseInlineSpans(text),
+        ),
+        i,
+        j,
+      );
 
       if (i + count == length) break;
       i = j - 1;
@@ -185,10 +239,19 @@ _ParseResult _parseMarkdownLines({
     }
 
     // --- Code block ---
-    if (line.startsWith('```')) {
-      final language = line.length > 3 ? line.substring(3).trim() : '';
+    if (_openingFence(line) case final fence?) {
+      final language = fence.info;
       var j = i + 1;
-      for (; j < length && !lineAt(j).startsWith('```'); j++) continue;
+      for (;
+          j < length &&
+              !_isClosingFence(
+                lineAt(j),
+                character: fence.character,
+                openingLength: fence.length,
+              );
+          j++) {
+        continue;
+      }
 
       final foundClosing = j < length;
 
@@ -198,7 +261,11 @@ _ParseResult _parseMarkdownLines({
         for (var k = i + 1; k < j; k++) {
           codeLines.add(lineAt(k));
         }
-        pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+        pushBlock(
+          MD$Code(text: codeLines.join('\n'), language: language),
+          i,
+          j + 1,
+        );
 
         if (j == length - 1) break;
         i = j;
@@ -213,7 +280,11 @@ _ParseResult _parseMarkdownLines({
             for (var k = i + 1; k < length; k++) {
               codeLines.add(lineAt(k));
             }
-            pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+            pushBlock(
+              MD$Code(text: codeLines.join('\n'), language: language),
+              i,
+              length,
+            );
             i = length;
             break;
           }
@@ -223,7 +294,11 @@ _ParseResult _parseMarkdownLines({
           for (var k = i + 1; k < length; k++) {
             codeLines.add(lineAt(k));
           }
-          pushBlock(MD$Code(text: codeLines.join('\n'), language: language));
+          pushBlock(
+            MD$Code(text: codeLines.join('\n'), language: language),
+            i,
+            length,
+          );
           i = length - 1;
         }
       }
@@ -305,11 +380,15 @@ _ParseResult _parseMarkdownLines({
         onBlockClosed?.call(i, j);
       }
 
-      pushBlock(MD$List(
-        text: listLines.join('\n'),
-        items: items,
-        closedItemCount: closedItemCount,
-      ));
+      pushBlock(
+        MD$List(
+          text: listLines.join('\n'),
+          items: items,
+          closedItemCount: closedItemCount,
+        ),
+        i,
+        j,
+      );
 
       if (i + count == length) break;
       i = j - 1;
@@ -352,13 +431,18 @@ _ParseResult _parseMarkdownLines({
           onBlockClosed?.call(i, j);
         }
 
-        pushBlock(MD$Table(
-          text: tableLines.join('\n'),
-          header: header,
-          rows: List<MD$TableRow>.unmodifiable(rows),
-        ));
+        pushBlock(
+          MD$Table(
+            text: tableLines.join('\n'),
+            header: header,
+            rows: List<MD$TableRow>.unmodifiable(rows),
+          ),
+          i,
+          j,
+        );
       } else {
         // Malformed table, treat as paragraph
+        if (paragraph.isEmpty) paragraphStart = i;
         if (paragraph.isNotEmpty) paragraph.writeln();
         paragraph.write(line);
         continue;
@@ -371,6 +455,7 @@ _ParseResult _parseMarkdownLines({
     }
 
     // --- Paragraph (default) ---
+    if (paragraph.isEmpty) paragraphStart = i;
     if (paragraph.isNotEmpty) paragraph.writeln();
     paragraph.write(line);
 
@@ -381,18 +466,18 @@ _ParseResult _parseMarkdownLines({
           _emptyPattern.hasMatch(nextLine) ||
           nextLine.startsWith('#') ||
           nextLine.startsWith('>') ||
-          nextLine.startsWith('```') ||
+          _openingFence(nextLine) != null ||
           nextLine.startsWith('---') ||
           nextLine.startsWith('|') ||
           (_listPattern.firstMatch(nextLine)?.namedGroup('indent')?.isEmpty ==
               true)) {
         onBlockClosed(i, i + 1);
-        maybeCommitParagraph();
+        maybeCommitParagraph(i + 1);
       }
     }
   }
 
-  maybeCommitParagraph();
+  maybeCommitParagraph(length);
 
   return _ParseResult(
     blocks: blocks,

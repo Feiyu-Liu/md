@@ -1,5 +1,14 @@
 import 'package:flutter/animation.dart';
 
+/// Lifecycle used to decide which Markdown blocks should animate.
+enum MarkdownAnimationMode {
+  /// Animates blocks as they close during incremental streaming.
+  streaming,
+
+  /// Replays only source blocks whose replacement value changed.
+  contentReplacement,
+}
+
 /// Range for animating a property from start to end value.
 class AnimationRange {
   /// Creates an animation range.
@@ -40,12 +49,13 @@ class AnimationRange {
 /// - [blurRange]: Gaussian blur effect (blur sigma from start to end)
 ///
 /// When [disableOnComplete] is true, animations will be automatically disabled
-/// after streaming completes and the final block finishes animating. This prevents
-/// animations from replaying on widget rebuilds (e.g., when scrolling).
+/// after streaming completes and the final block finishes animating. This
+/// prevents animations from replaying on rebuilds (e.g., when scrolling).
 class MarkdownAnimationConfig {
   /// Creates a new animation configuration.
   const MarkdownAnimationConfig({
     this.enabled = false,
+    this.mode = MarkdownAnimationMode.streaming,
     this.duration = const Duration(milliseconds: 500),
     this.curve = Curves.easeOutCubic,
     this.opacityRange,
@@ -54,9 +64,20 @@ class MarkdownAnimationConfig {
     this.disableOnComplete = false,
   });
 
+  /// Recommended animation for source-block content replacements.
+  const MarkdownAnimationConfig.contentReplacement({
+    this.enabled = true,
+    this.duration = const Duration(milliseconds: 420),
+    this.curve = Curves.easeOutCubic,
+    this.opacityRange = const AnimationRange(start: 0.72, end: 1),
+    this.blurRange = const AnimationRange(start: 5, end: 0),
+    this.offsetRange,
+  })  : mode = MarkdownAnimationMode.contentReplacement,
+        disableOnComplete = false;
+
   /// Whether animation is enabled.
   ///
-  /// When enabled:
+  /// In [MarkdownAnimationMode.streaming], when enabled:
   /// - Only closed blocks are rendered
   /// - Newly closed blocks animate in based on configured effects
   /// - Open blocks remain invisible
@@ -64,6 +85,10 @@ class MarkdownAnimationConfig {
   /// When disabled:
   /// - All blocks are rendered immediately (including open blocks)
   final bool enabled;
+
+  /// Determines whether streaming closure or replacement changes trigger
+  /// motion.
+  final MarkdownAnimationMode mode;
 
   /// Duration of the animation.
   final Duration duration;
@@ -93,7 +118,8 @@ class MarkdownAnimationConfig {
   /// Whether to automatically disable animations after streaming completes.
   ///
   /// When true, after [isStreamingComplete] becomes true and the last block's
-  /// animation finishes, the animation config will be set to disabled internally.
+  /// animation finishes, the animation config will be set to disabled
+  /// internally.
   /// This prevents animations from replaying on subsequent widget rebuilds.
   ///
   /// This is useful for preventing animation replays when:
@@ -108,12 +134,24 @@ class MarkdownAnimationConfig {
   /// All blocks are rendered immediately without animation.
   static const MarkdownAnimationConfig disabled = MarkdownAnimationConfig();
 
+  /// Returns an equivalent configuration with animation disabled.
+  MarkdownAnimationConfig withoutAnimation() => MarkdownAnimationConfig(
+        mode: mode,
+        duration: duration,
+        curve: curve,
+        opacityRange: opacityRange,
+        offsetRange: offsetRange,
+        blurRange: blurRange,
+        disableOnComplete: disableOnComplete,
+      );
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is MarkdownAnimationConfig &&
           runtimeType == other.runtimeType &&
           enabled == other.enabled &&
+          mode == other.mode &&
           duration == other.duration &&
           curve == other.curve &&
           opacityRange == other.opacityRange &&
@@ -124,6 +162,7 @@ class MarkdownAnimationConfig {
   @override
   int get hashCode => Object.hash(
         enabled,
+        mode,
         duration,
         curve,
         opacityRange,
@@ -135,6 +174,7 @@ class MarkdownAnimationConfig {
   @override
   String toString() => 'MarkdownAnimationConfig('
       'enabled: $enabled, '
+      'mode: $mode, '
       'duration: $duration, '
       'curve: $curve, '
       'opacityRange: $opacityRange, '
