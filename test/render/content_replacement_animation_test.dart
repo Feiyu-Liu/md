@@ -12,7 +12,7 @@ void main() => group('content replacement animation', () {
         expect(config.mode, MarkdownAnimationMode.contentReplacement);
         expect(config.duration, const Duration(milliseconds: 420));
         expect(config.curve, Curves.easeOutCubic);
-        expect(config.opacityRange, const AnimationRange(start: 0.72, end: 1));
+        expect(config.opacityRange, const AnimationRange(start: 0, end: 1));
         expect(config.blurRange, const AnimationRange(start: 5, end: 0));
         expect(config.offsetRange, isNull);
       });
@@ -50,11 +50,15 @@ void main() => group('content replacement animation', () {
         expect(renderObject.debugAnimatingBlockIds, <MarkdownBlockId>{firstId});
         expect(renderObject.debugAnimationValueForBlock(firstId), 0);
         expect(renderObject.debugAnimationValueForBlock(secondId), 1);
+        expect(renderObject.debugHasOutgoingPainterForBlock(firstId), isTrue);
 
-        await tester.pump(const Duration(milliseconds: 220));
+        await tester.pump(const Duration(milliseconds: 180));
         final midway = renderObject.debugAnimationValueForBlock(firstId)!;
         expect(midway, inExclusiveRange(0, 1));
-        await tester.pump(const Duration(milliseconds: 210));
+        expect(renderObject.debugHasOutgoingPainterForBlock(firstId), isTrue);
+        await tester.pump(const Duration(milliseconds: 15));
+        expect(renderObject.debugHasOutgoingPainterForBlock(firstId), isFalse);
+        await tester.pump(const Duration(milliseconds: 235));
         expect(renderObject.debugAnimatingBlockIds, isEmpty);
 
         await tester.pumpWidget(
@@ -94,6 +98,87 @@ void main() => group('content replacement animation', () {
         final renderObject = _renderObject(tester, key);
         expect(renderObject.debugAnimatingBlockIds, isEmpty);
         expect(renderObject.debugAnimationValueForBlock(id), 1);
+      });
+
+      testWidgets('later draft updates preserve earlier outgoing transitions',
+          (tester) async {
+        final document = parser.parse('# One\n\n# Two');
+        final firstId = document.blocks.first.id;
+        final secondId = document.blocks.last.id;
+        const key = ValueKey<String>('markdown');
+
+        Widget subject(Map<MarkdownBlockId, String> replacements) => _app(
+              MarkdownWidget.contentReplacement(
+                key: key,
+                document: document,
+                replacements: replacements,
+              ),
+            );
+
+        await tester.pumpWidget(subject(const <MarkdownBlockId, String>{}));
+        await tester.pumpWidget(subject(<MarkdownBlockId, String>{
+          firstId: '# First replacement',
+        }));
+        await tester.pump(const Duration(milliseconds: 100));
+
+        await tester.pumpWidget(subject(<MarkdownBlockId, String>{
+          firstId: '# First replacement',
+          secondId: '# Second replacement',
+        }));
+        final renderObject = _renderObject(tester, key);
+        expect(renderObject.debugHasOutgoingPainterForBlock(firstId), isTrue);
+        expect(renderObject.debugHasOutgoingPainterForBlock(secondId), isTrue);
+
+        await tester.pump(const Duration(milliseconds: 95));
+        expect(renderObject.debugHasOutgoingPainterForBlock(firstId), isFalse);
+        expect(renderObject.debugHasOutgoingPainterForBlock(secondId), isTrue);
+      });
+
+      testWidgets('routes link interaction to the incoming replacement', (
+        tester,
+      ) async {
+        final document = parser.parse('[old](https://old.example)');
+        final id = document.blocks.single.id;
+        const key = ValueKey<String>('markdown');
+        String? tappedUrl;
+        final theme = MarkdownThemeData(
+          textStyle: const TextStyle(fontSize: 16),
+          onLinkTap: (_, url) => tappedUrl = url,
+        );
+
+        await tester.pumpWidget(
+          _app(
+            SizedBox(
+              width: 300,
+              child: MarkdownWidget.contentReplacement(
+                key: key,
+                document: document,
+                theme: theme,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpWidget(
+          _app(
+            SizedBox(
+              width: 300,
+              child: MarkdownWidget.contentReplacement(
+                key: key,
+                document: document,
+                replacements: <MarkdownBlockId, String>{
+                  id: '[new](https://new.example)',
+                },
+                theme: theme,
+              ),
+            ),
+          ),
+        );
+
+        final rect = tester.getRect(find.byKey(key));
+        await tester.tapAt(rect.centerLeft + const Offset(10, 0));
+        await tester.pump();
+
+        expect(tappedUrl, 'https://new.example');
       });
 
       testWidgets('mode changes reset aliased controllers safely',
@@ -207,6 +292,7 @@ void main() => group('content replacement animation', () {
 
         final renderObject = _renderObject(tester, key);
         expect(renderObject.debugAnimatingBlockIds, isEmpty);
+        expect(renderObject.debugHasOutgoingPainterForBlock(id), isFalse);
         expect(renderObject.debugPlainText, 'Replacement');
       });
 
@@ -415,8 +501,12 @@ void main() => group('content replacement animation', () {
             ),
           ),
         );
-        expect(painters[painters.length - 2].disposed, isTrue);
+        final outgoing = painters[painters.length - 2];
+        expect(outgoing.disposed, isFalse);
         expect(painters.last.disposed, isFalse);
+
+        await tester.pump(const Duration(milliseconds: 195));
+        expect(outgoing.disposed, isTrue);
 
         await tester.pumpWidget(const SizedBox());
         expect(painters.last.disposed, isTrue);

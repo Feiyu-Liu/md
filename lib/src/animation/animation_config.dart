@@ -69,7 +69,7 @@ class MarkdownAnimationConfig {
     this.enabled = true,
     this.duration = const Duration(milliseconds: 420),
     this.curve = Curves.easeOutCubic,
-    this.opacityRange = const AnimationRange(start: 0.72, end: 1),
+    this.opacityRange = const AnimationRange(start: 0, end: 1),
     this.blurRange = const AnimationRange(start: 5, end: 0),
     this.offsetRange,
   })  : mode = MarkdownAnimationMode.contentReplacement,

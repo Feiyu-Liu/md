@@ -116,6 +116,10 @@ class MarkdownRenderObject extends RenderBox
       _painter.animationValueForBlock(id);
 
   @visibleForTesting
+  bool debugHasOutgoingPainterForBlock(MarkdownBlockId id) =>
+      _painter.hasOutgoingPainterForBlock(id);
+
+  @visibleForTesting
   String get debugPlainText => _painter.plainText;
 
   @visibleForTesting
@@ -615,6 +619,20 @@ class MarkdownPainter {
     return index < 0 ? null : _controllers[index].value;
   }
 
+  bool hasOutgoingPainterForBlock(MarkdownBlockId id) {
+    final ids = _renderedBlockIds;
+    if (ids == null || ids.length != _blockPainters.length) return false;
+    for (var index = 0; index < ids.length; index++) {
+      final painter = _blockPainters[index];
+      if (ids[index] == id &&
+          painter is ContentReplacementBlockPainter &&
+          painter.hasOutgoing) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Rect? blockBoundsForId(MarkdownBlockId id) {
     final ids = _renderedBlockIds;
     if (ids == null ||
@@ -788,14 +806,13 @@ class MarkdownPainter {
               builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
-    _disposeReplacedBlockPainters(rawPainters);
-
     // Wrap with animation if enabled and vsync is available
     if (animationConfig.enabled && _vsync != null) {
       _rebuildWithAnimations(rawPainters);
     } else {
       // Dispose old controllers if any
       _disposeAnimationControllers();
+      _disposeReplacedBlockPainters(rawPainters);
       _blockPainters = rawPainters;
     }
 
@@ -820,8 +837,6 @@ class MarkdownPainter {
               builder?.call(block, _theme) ?? _defaultBlockBuilder(block),
         )
         .toList(growable: false);
-    _disposeReplacedBlockPainters(rawPainters);
-
     _rebuildWithAnimations(rawPainters);
     _blockOffsets = Float32List(_blockPainters.length);
     _needsLayout = true;
@@ -834,6 +849,7 @@ class MarkdownPainter {
       _rebuildContentReplacementAnimations(rawPainters);
       return;
     }
+    _disposeReplacedBlockPainters(rawPainters);
     final oldCount = _controllers.length;
     final newCount = rawPainters.length;
 
@@ -985,6 +1001,7 @@ class MarkdownPainter {
     final ids = _renderedBlockIds;
     if (ids == null || ids.length != rawPainters.length) {
       _disposeAnimationControllers();
+      _disposeReplacedBlockPainters(rawPainters);
       _blockPainters = rawPainters;
       return;
     }
@@ -1020,41 +1037,142 @@ class MarkdownPainter {
     for (final controller in controllersById.values) {
       controller.duration = animationConfig.duration;
     }
+
     Animation<double>? rangeAnimation(
       AnimationController controller,
-      AnimationRange? range,
-    ) =>
-        range == null
-            ? null
-            : Tween<double>(begin: range.start, end: range.end).animate(
-                CurvedAnimation(
-                    parent: controller, curve: animationConfig.curve),
-              );
+      AnimationRange? range, {
+      required bool outgoing,
+    }) {
+      if (range == null) return null;
+      final begin = outgoing ? range.end : range.start;
+      final end = outgoing ? range.start : range.end;
+      final interval = outgoing
+          ? Interval(0, 0.45, curve: animationConfig.curve.flipped)
+          : Interval(0.25, 1, curve: animationConfig.curve);
+      return Tween<double>(begin: begin, end: end).animate(
+        CurvedAnimation(parent: controller, curve: interval),
+      );
+    }
 
     _opacityAnimations = <Animation<double>?>[
       for (final controller in _controllers)
-        rangeAnimation(controller, animationConfig.opacityRange),
+        rangeAnimation(
+          controller,
+          animationConfig.opacityRange,
+          outgoing: false,
+        ),
     ];
     _offsetAnimations = <Animation<double>?>[
       for (final controller in _controllers)
-        rangeAnimation(controller, animationConfig.offsetRange),
+        rangeAnimation(
+          controller,
+          animationConfig.offsetRange,
+          outgoing: false,
+        ),
     ];
     _blurAnimations = <Animation<double>?>[
       for (final controller in _controllers)
-        rangeAnimation(controller, animationConfig.blurRange),
-    ];
-    _blockPainters = <BlockPainter>[
-      for (var index = 0; index < rawPainters.length; index++)
-        AnimatedBlockPainter(
-          inner: rawPainters[index],
-          opacityAnimation: _opacityAnimations[index],
-          offsetAnimation: _offsetAnimations[index],
-          blurAnimation: _blurAnimations[index],
+        rangeAnimation(
+          controller,
+          animationConfig.blurRange,
+          outgoing: false,
         ),
     ];
 
     final previous = _previousReplacementValues;
     final current = _replacementValues;
+    final changedIds = <MarkdownBlockId>{
+      if (previous != null && current != null)
+        for (final id in ids)
+          if (previous[id] != current[id]) id,
+    };
+
+    final oldPaintersById = <MarkdownBlockId, List<BlockPainter>>{};
+    if (oldIds != null && oldIds.length == _blockPainters.length) {
+      for (var index = 0; index < oldIds.length; index++) {
+        oldPaintersById
+            .putIfAbsent(oldIds[index], () => <BlockPainter>[])
+            .add(_blockPainters[index]);
+      }
+    } else {
+      for (final painter in _blockPainters) {
+        painter.dispose();
+      }
+    }
+
+    BlockPainter? takeOldPainter(MarkdownBlockId id) {
+      final painters = oldPaintersById[id];
+      if (painters == null || painters.isEmpty) return null;
+      return painters.removeAt(0);
+    }
+
+    final newPainters = <BlockPainter>[];
+    for (var index = 0; index < rawPainters.length; index++) {
+      final id = ids[index];
+      final controller = _controllers[index];
+      final oldPainter = takeOldPainter(id);
+      final isChanged = changedIds.contains(id);
+      BlockPainter? outgoing;
+
+      if (isChanged && oldPainter != null) {
+        outgoing = _takeCurrentPainter(oldPainter);
+      } else if (!isChanged &&
+          controller.isAnimating &&
+          oldPainter is ContentReplacementBlockPainter) {
+        outgoing = oldPainter.takeOutgoing();
+        oldPainter.dispose();
+      } else {
+        oldPainter?.dispose();
+      }
+
+      if (outgoing == null) {
+        newPainters.add(
+          AnimatedBlockPainter(
+            inner: rawPainters[index],
+            opacityAnimation: _opacityAnimations[index],
+            offsetAnimation: _offsetAnimations[index],
+            blurAnimation: _blurAnimations[index],
+          ),
+        );
+        continue;
+      }
+
+      newPainters.add(
+        ContentReplacementBlockPainter(
+          outgoing: outgoing,
+          incoming: rawPainters[index],
+          exitProgress: CurvedAnimation(
+            parent: controller,
+            curve: const Interval(0, 0.45),
+          ),
+          outgoingOpacityAnimation: rangeAnimation(
+            controller,
+            animationConfig.opacityRange,
+            outgoing: true,
+          ),
+          outgoingOffsetAnimation: rangeAnimation(
+            controller,
+            animationConfig.offsetRange,
+            outgoing: true,
+          ),
+          outgoingBlurAnimation: rangeAnimation(
+            controller,
+            animationConfig.blurRange,
+            outgoing: true,
+          ),
+          incomingOpacityAnimation: _opacityAnimations[index],
+          incomingOffsetAnimation: _offsetAnimations[index],
+          incomingBlurAnimation: _blurAnimations[index],
+        ),
+      );
+    }
+    for (final painters in oldPaintersById.values) {
+      for (final painter in painters) {
+        painter.dispose();
+      }
+    }
+    _blockPainters = newPainters;
+
     if (previous != null && current != null) {
       for (final entry in controllersById.entries) {
         if (previous[entry.key] != current[entry.key]) {
@@ -1709,20 +1827,54 @@ class MarkdownPainter {
 
   static BlockPainter _unwrapAnimatedPainter(BlockPainter painter) {
     var result = painter;
-    while (result is AnimatedBlockPainter) {
-      result = result.inner;
+    while (true) {
+      if (result is AnimatedBlockPainter) {
+        result = result.inner;
+        continue;
+      }
+      if (result is ContentReplacementBlockPainter) {
+        result = result.incoming;
+        continue;
+      }
+      return result;
     }
-    return result;
   }
 
   static double _animatedVerticalOffset(BlockPainter painter) {
     var result = 0.0;
     var current = painter;
-    while (current is AnimatedBlockPainter) {
-      result += current.offsetAnimation?.value ?? 0;
-      current = current.inner;
+    while (true) {
+      if (current is AnimatedBlockPainter) {
+        result += current.offsetAnimation?.value ?? 0;
+        current = current.inner;
+        continue;
+      }
+      if (current is ContentReplacementBlockPainter) {
+        result += current.incomingOffsetAnimation?.value ?? 0;
+        current = current.incoming;
+        continue;
+      }
+      return result;
     }
-    return result;
+  }
+
+  static BlockPainter _takeCurrentPainter(BlockPainter painter) {
+    var current = painter;
+    while (true) {
+      if (current is AnimatedBlockPainter) {
+        final inner = current.takeInner();
+        current.dispose();
+        current = inner;
+        continue;
+      }
+      if (current is ContentReplacementBlockPainter) {
+        final incoming = current.takeIncoming();
+        current.dispose();
+        current = incoming;
+        continue;
+      }
+      return current;
+    }
   }
 
   void dispose() {

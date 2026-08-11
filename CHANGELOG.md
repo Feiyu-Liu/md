@@ -1,5 +1,7 @@
 ## Unreleased
 
+- **CHANGED**: Source-anchored content replacements now crossfade each outgoing
+  block into its incoming replacement with coordinated blur and opacity.
 - **ADDED**: Native Markdown text selection under Flutter `SelectionArea`,
   including mouse, touch, keyboard, context-menu, and clipboard behavior.
 - **ADDED**: Structural clipboard output for lists, tables, code blocks, links,
