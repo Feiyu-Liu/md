@@ -262,7 +262,10 @@ void main() => group('content replacement animation', () {
         );
 
         expect(
-          _renderObject(tester, key).debugAnimatingBlockIds,
+          tester.allRenderObjects
+              .whereType<MarkdownRenderObject>()
+              .expand((renderObject) => renderObject.debugAnimatingBlockIds)
+              .toSet(),
           <MarkdownBlockId>{listBlock.id, tableBlock.id},
         );
       });

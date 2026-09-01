@@ -2,7 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import 'animation/animation_config.dart';
 import 'markdown.dart' show Markdown;
-import 'nodes.dart' show MD$Block;
+import 'nodes.dart' show MD$Block, MD$Divider, MD$Spacer, MD$Table;
 import 'parser.dart'
     show
         MarkdownBlockId,
@@ -96,6 +96,7 @@ class MarkdownWidget extends StatefulWidget {
 class _MarkdownWidgetState extends State<MarkdownWidget> {
   final MarkdownSelectionDelegate _selectionDelegate =
       MarkdownSelectionDelegate();
+  final Map<(MarkdownBlockId, int), GlobalKey> _blockRenderKeys = {};
 
   @override
   void didUpdateWidget(MarkdownWidget oldWidget) {
@@ -113,37 +114,29 @@ class _MarkdownWidgetState extends State<MarkdownWidget> {
     };
     if (changedIds.isEmpty) return;
     final scrollable = Scrollable.maybeOf(context);
-    final renderObject = context.findRenderObject();
     final viewportObject = scrollable?.context.findRenderObject();
     final axisDirection = scrollable?.position.axisDirection;
     if (scrollable == null ||
-        renderObject is! MarkdownRenderObject ||
         viewportObject is! RenderBox ||
         (axisDirection != AxisDirection.down &&
             axisDirection != AxisDirection.up) ||
-        !renderObject.hasSize ||
         !viewportObject.hasSize) {
       return;
     }
     final viewportTop = viewportObject.localToGlobal(Offset.zero).dy;
     final oldHeights = <MarkdownBlockId, double>{};
     for (final id in changedIds) {
-      final bounds = renderObject.blockBoundsForId(id);
+      final bounds = _blockBoundsForId(id);
       if (bounds == null) continue;
-      final bottom = renderObject.localToGlobal(bounds.bottomLeft).dy;
-      if (bottom <= viewportTop) oldHeights[id] = bounds.height;
+      if (bounds.bottom <= viewportTop) oldHeights[id] = bounds.height;
     }
     if (oldHeights.isEmpty) return;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || scrollable.position.isScrollingNotifier.value) return;
-      final updatedRenderObject = context.findRenderObject();
-      if (updatedRenderObject is! MarkdownRenderObject) return;
       var delta = 0.0;
       for (final entry in oldHeights.entries) {
-        delta +=
-            (updatedRenderObject.blockBoundsForId(entry.key)?.height ?? 0) -
-                entry.value;
+        delta += (_blockBoundsForId(entry.key)?.height ?? 0) - entry.value;
       }
       final position = scrollable.position;
       if (delta.abs() < 0.01 || !position.hasContentDimensions) {
@@ -177,18 +170,32 @@ class _MarkdownWidgetState extends State<MarkdownWidget> {
         );
     final registrar = SelectionContainer.maybeOf(context);
     final selectionStyle = DefaultSelectionStyle.of(context);
-    final child = _MarkdownRenderObjectWidget(
-      markdown: resolved.markdown,
-      theme: theme,
-      animationConfig: animationConfig,
-      isStreamingComplete: widget.isStreamingComplete,
-      onAnimationComplete: widget.onAnimationComplete,
-      blockIds: resolved.blockIds,
-      replacementValues: resolved.replacementValues,
-      selectionDelegate: registrar == null ? null : _selectionDelegate,
-      selectionColor:
-          selectionStyle.selectionColor ?? DefaultSelectionStyle.defaultColor,
-    );
+    final selectionColor =
+        selectionStyle.selectionColor ?? DefaultSelectionStyle.defaultColor;
+    final child = resolved.markdown.blocks.any((block) => block is MD$Table)
+        ? _MarkdownBlockLayout(
+            markdown: resolved.markdown,
+            theme: theme,
+            animationConfig: animationConfig,
+            isStreamingComplete: widget.isStreamingComplete,
+            onAnimationComplete: widget.onAnimationComplete,
+            blockIds: resolved.blockIds,
+            replacementValues: resolved.replacementValues,
+            selectionDelegate: registrar == null ? null : _selectionDelegate,
+            selectionColor: selectionColor,
+            blockRenderKeys: _keysForBlocks(resolved.blockIds),
+          )
+        : _MarkdownRenderObjectWidget(
+            markdown: resolved.markdown,
+            theme: theme,
+            animationConfig: animationConfig,
+            isStreamingComplete: widget.isStreamingComplete,
+            onAnimationComplete: widget.onAnimationComplete,
+            blockIds: resolved.blockIds,
+            replacementValues: resolved.replacementValues,
+            selectionDelegate: registrar == null ? null : _selectionDelegate,
+            selectionColor: selectionColor,
+          );
     if (registrar == null) return child;
 
     return MouseRegion(
@@ -206,10 +213,55 @@ class _MarkdownWidgetState extends State<MarkdownWidget> {
     _selectionDelegate.dispose();
     super.dispose();
   }
+
+  List<GlobalKey?> _keysForBlocks(List<MarkdownBlockId>? ids) {
+    if (ids == null) return const <GlobalKey?>[];
+    final occurrences = <MarkdownBlockId, int>{};
+    final active = <(MarkdownBlockId, int)>{};
+    final keys = <GlobalKey>[];
+
+    for (final id in ids) {
+      final occurrence =
+          occurrences.update(id, (value) => value + 1, ifAbsent: () => 0);
+      final identity = (id, occurrence);
+      active.add(identity);
+      keys.add(
+        _blockRenderKeys.putIfAbsent(
+          identity,
+          () => GlobalKey(debugLabel: '${id.value}:$occurrence'),
+        ),
+      );
+    }
+    _blockRenderKeys.removeWhere((identity, _) => !active.contains(identity));
+    return keys;
+  }
+
+  Rect? _blockBoundsForId(MarkdownBlockId id) {
+    final root = context.findRenderObject();
+    if (root case MarkdownRenderObject()) {
+      final bounds = root.blockBoundsForId(id);
+      if (bounds == null) return null;
+      return MatrixUtils.transformRect(root.getTransformTo(null), bounds);
+    }
+
+    Rect? result;
+    for (final entry in _blockRenderKeys.entries) {
+      if (entry.key.$1 != id) continue;
+      final renderObject = entry.value.currentContext?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.hasSize) continue;
+      final bounds = MatrixUtils.transformRect(
+        renderObject.getTransformTo(null),
+        Offset.zero & renderObject.size,
+      );
+      result = result == null ? bounds : result.expandToInclude(bounds);
+    }
+    return result;
+  }
 }
 
 class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
   const _MarkdownRenderObjectWidget({
+    super.key,
     required this.markdown,
     required this.theme,
     required this.animationConfig,
@@ -219,6 +271,10 @@ class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
     required this.replacementValues,
     required this.selectionDelegate,
     required this.selectionColor,
+    this.layoutMaxWidth,
+    this.selectionBaseOffset = 0,
+    this.selectionPrefix = '',
+    this.renderAllBlocks = false,
   });
 
   final Markdown markdown;
@@ -230,6 +286,10 @@ class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
   final Map<MarkdownBlockId, String>? replacementValues;
   final MarkdownSelectionDelegate? selectionDelegate;
   final Color selectionColor;
+  final double? layoutMaxWidth;
+  final int selectionBaseOffset;
+  final String selectionPrefix;
+  final bool renderAllBlocks;
 
   @override
   RenderObject createRenderObject(BuildContext context) {
@@ -243,6 +303,10 @@ class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
       replacementValues: replacementValues,
       selectionDelegate: selectionDelegate,
       selectionColor: selectionColor,
+      layoutMaxWidth: layoutMaxWidth,
+      selectionBaseOffset: selectionBaseOffset,
+      selectionPrefix: selectionPrefix,
+      renderAllBlocks: renderAllBlocks,
     );
   }
 
@@ -261,7 +325,137 @@ class _MarkdownRenderObjectWidget extends LeafRenderObjectWidget {
       replacementValues: replacementValues,
       selectionDelegate: selectionDelegate,
       selectionColor: selectionColor,
+      layoutMaxWidth: layoutMaxWidth,
+      selectionBaseOffset: selectionBaseOffset,
+      selectionPrefix: selectionPrefix,
+      renderAllBlocks: renderAllBlocks,
     );
+  }
+}
+
+class _MarkdownBlockLayout extends StatelessWidget {
+  const _MarkdownBlockLayout({
+    required this.markdown,
+    required this.theme,
+    required this.animationConfig,
+    required this.isStreamingComplete,
+    required this.onAnimationComplete,
+    required this.blockIds,
+    required this.replacementValues,
+    required this.selectionDelegate,
+    required this.selectionColor,
+    required this.blockRenderKeys,
+  });
+
+  final Markdown markdown;
+  final MarkdownThemeData theme;
+  final MarkdownAnimationConfig animationConfig;
+  final ValueNotifier<bool>? isStreamingComplete;
+  final VoidCallback? onAnimationComplete;
+  final List<MarkdownBlockId>? blockIds;
+  final Map<MarkdownBlockId, String>? replacementValues;
+  final MarkdownSelectionDelegate? selectionDelegate;
+  final Color selectionColor;
+  final List<GlobalKey?> blockRenderKeys;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectionPrefixes = _selectionPrefixes();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        for (var index = 0; index < markdown.blocks.length; index++)
+          _buildBlock(context, index, selectionPrefixes[index]),
+      ],
+    );
+  }
+
+  Widget _buildBlock(
+    BuildContext context,
+    int index,
+    String selectionPrefix,
+  ) {
+    final block = markdown.blocks[index];
+    final blockId = blockIds?[index];
+    final renderKey = blockRenderKeys.isEmpty ? null : blockRenderKeys[index];
+    final renderAllBlocks =
+        animationConfig.mode == MarkdownAnimationMode.streaming &&
+            index < markdown.blocks.length - 1;
+    final child = _MarkdownRenderObjectWidget(
+      key: renderKey ?? ValueKey<Object>(blockId ?? (index, block.type)),
+      markdown: Markdown(markdown: block.text, blocks: <MD$Block>[block]),
+      theme: theme,
+      animationConfig: animationConfig,
+      isStreamingComplete: isStreamingComplete,
+      onAnimationComplete: onAnimationComplete,
+      blockIds: blockId == null ? null : <MarkdownBlockId>[blockId],
+      replacementValues: replacementValues,
+      selectionDelegate: selectionDelegate,
+      selectionColor: selectionColor,
+      selectionBaseOffset: index << 32,
+      selectionPrefix: selectionPrefix,
+      renderAllBlocks: renderAllBlocks,
+    );
+    if (block is! MD$Table) return child;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewportWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        return SingleChildScrollView(
+          key: ValueKey<Object>('markdown-table-scroll-${blockId ?? index}'),
+          scrollDirection: Axis.horizontal,
+          child: _MarkdownRenderObjectWidget(
+            key: renderKey ??
+                ValueKey<Object>('markdown-table-${blockId ?? index}'),
+            markdown: Markdown(
+              markdown: block.text,
+              blocks: <MD$Block>[block],
+            ),
+            theme: theme,
+            animationConfig: animationConfig,
+            isStreamingComplete: isStreamingComplete,
+            onAnimationComplete: onAnimationComplete,
+            blockIds: blockId == null ? null : <MarkdownBlockId>[blockId],
+            replacementValues: replacementValues,
+            selectionDelegate: selectionDelegate,
+            selectionColor: selectionColor,
+            layoutMaxWidth: viewportWidth,
+            selectionBaseOffset: index << 32,
+            selectionPrefix: selectionPrefix,
+            renderAllBlocks: renderAllBlocks,
+          ),
+        );
+      },
+    );
+  }
+
+  List<String> _selectionPrefixes() {
+    final prefixes = List<String>.filled(markdown.blocks.length, '');
+    var hasContent = false;
+    var pending = '';
+
+    for (var index = 0; index < markdown.blocks.length; index++) {
+      final block = markdown.blocks[index];
+      if (block case MD$Spacer(:final count)) {
+        if (hasContent && pending.isEmpty) pending = '\n';
+        pending += '\n' * count;
+        continue;
+      }
+      if (block is MD$Divider) {
+        pending += '\n';
+        continue;
+      }
+
+      if (hasContent && pending.isEmpty) pending = '\n';
+      prefixes[index] = pending;
+      pending = '';
+      hasContent = true;
+    }
+
+    return prefixes;
   }
 }
 

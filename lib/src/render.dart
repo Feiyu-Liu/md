@@ -41,11 +41,18 @@ class MarkdownRenderObject extends RenderBox
     Map<MarkdownBlockId, String>? replacementValues,
     MarkdownSelectionDelegate? selectionDelegate,
     Color selectionColor = const Color(0x6633B5E5),
+    double? layoutMaxWidth,
+    int selectionBaseOffset = 0,
+    String selectionPrefix = '',
+    bool renderAllBlocks = false,
   })  : _animationConfig = animationConfig,
         _isStreamingComplete = isStreamingComplete,
         _externalOnAnimationComplete = onAnimationComplete,
         _selectionDelegate = selectionDelegate,
         _selectionColor = selectionColor,
+        _layoutMaxWidth = layoutMaxWidth,
+        _selectionBaseOffset = selectionBaseOffset,
+        _selectionPrefix = selectionPrefix,
         _painter = MarkdownPainter(
           markdown: markdown,
           theme: theme,
@@ -53,6 +60,7 @@ class MarkdownRenderObject extends RenderBox
           isStreamingComplete: isStreamingComplete,
           blockIds: blockIds,
           replacementValues: replacementValues,
+          renderAllBlocks: renderAllBlocks,
         ) {
     // Set the animation complete callback after construction
     // 在构造后设置动画完成回调
@@ -90,6 +98,9 @@ class MarkdownRenderObject extends RenderBox
 
   MarkdownSelectionDelegate? _selectionDelegate;
   Color _selectionColor;
+  double? _layoutMaxWidth;
+  int _selectionBaseOffset;
+  String _selectionPrefix;
   List<MarkdownSelectableFragment> _selectionFragments =
       const <MarkdownSelectableFragment>[];
   String _selectionText = '';
@@ -223,15 +234,17 @@ class MarkdownRenderObject extends RenderBox
   }
 
   @override
-  Size computeDryLayout(BoxConstraints constraints) =>
-      constraints.constrain(_painter.layout(maxWidth: constraints.maxWidth));
+  Size computeDryLayout(BoxConstraints constraints) => constraints.constrain(
+        _painter.layout(maxWidth: _layoutMaxWidth ?? constraints.maxWidth),
+      );
 
   @override
   void performLayout() {
     // Set the size of the render box to match the painter's size.
     // 设置渲染盒的尺寸以匹配绘制器的尺寸
-    size =
-        constraints.constrain(_painter.layout(maxWidth: constraints.maxWidth));
+    size = constraints.constrain(
+      _painter.layout(maxWidth: _layoutMaxWidth ?? constraints.maxWidth),
+    );
     _syncSelectionFragments();
   }
 
@@ -298,7 +311,17 @@ class MarkdownRenderObject extends RenderBox
     Map<MarkdownBlockId, String>? replacementValues,
     MarkdownSelectionDelegate? selectionDelegate,
     Color selectionColor = const Color(0x6633B5E5),
+    double? layoutMaxWidth,
+    int selectionBaseOffset = 0,
+    String selectionPrefix = '',
+    bool renderAllBlocks = false,
   }) {
+    final layoutWidthChanged = _layoutMaxWidth != layoutMaxWidth;
+    final selectionOffsetChanged = _selectionBaseOffset != selectionBaseOffset;
+    final selectionPrefixChanged = _selectionPrefix != selectionPrefix;
+    _layoutMaxWidth = layoutMaxWidth;
+    _selectionBaseOffset = selectionBaseOffset;
+    _selectionPrefix = selectionPrefix;
     _clearSelectionFragments();
     _selectionDelegate = selectionDelegate;
     _selectionColor = selectionColor;
@@ -337,13 +360,17 @@ class MarkdownRenderObject extends RenderBox
     _painter.onAnimationComplete = _handleAnimationComplete;
 
     if (_painter.update(
-      markdown: markdown,
-      theme: theme,
-      animationConfig: effectiveConfig,
-      isStreamingComplete: isStreamingComplete,
-      blockIds: blockIds,
-      replacementValues: replacementValues,
-    )) {
+          markdown: markdown,
+          theme: theme,
+          animationConfig: effectiveConfig,
+          isStreamingComplete: isStreamingComplete,
+          blockIds: blockIds,
+          replacementValues: replacementValues,
+          renderAllBlocks: renderAllBlocks,
+        ) ||
+        layoutWidthChanged ||
+        selectionOffsetChanged ||
+        selectionPrefixChanged) {
       // Mark the render object as needing layout.
       // 将渲染对象标记为需要重新布局
       markNeedsLayout();
@@ -433,7 +460,12 @@ class MarkdownRenderObject extends RenderBox
     }
 
     final document = _painter.selectionDocument();
-    var documentOffset = 0;
+    if (_selectionPrefix.isNotEmpty && document.descriptors.isNotEmpty) {
+      final first = document.descriptors.first;
+      first.prefix = '$_selectionPrefix${first.prefix}';
+    }
+    final selectionText = '$_selectionPrefix${document.text}';
+    var documentOffset = _selectionBaseOffset;
     final fragments = <MarkdownSelectableFragment>[];
     for (final descriptor in document.descriptors) {
       final fragment = MarkdownSelectableFragment(
@@ -448,14 +480,14 @@ class MarkdownRenderObject extends RenderBox
 
     delegate.registerFragments(
       previousText: _selectionText,
-      text: document.text,
+      text: selectionText,
       fragments: fragments,
     );
     _selectionFragments = fragments;
     if (fragments.isNotEmpty) {
       markNeedsCompositingBitsUpdate();
     }
-    _selectionText = document.text;
+    _selectionText = selectionText;
     delegate.layoutDidChange();
   }
 }
@@ -473,16 +505,21 @@ class MarkdownPainter {
     ValueNotifier<bool>? isStreamingComplete,
     List<MarkdownBlockId>? blockIds,
     Map<MarkdownBlockId, String>? replacementValues,
+    this.renderAllBlocks = false,
     this.onAnimationComplete,
   })  : _markdown = markdown,
         _theme = theme,
         _isStreamingComplete = isStreamingComplete,
         _blockIds = blockIds,
         _replacementValues = replacementValues,
-        _isEmpty = _getClosedBlocks(markdown, isStreamingComplete).isEmpty,
+        _isEmpty = renderAllBlocks
+            ? markdown.isEmpty
+            : _getClosedBlocks(markdown, isStreamingComplete).isEmpty,
         _size = Size.zero {
     _lastClosedSignature = _closedBlocksSignature(
-      _getClosedBlocks(markdown, isStreamingComplete),
+      renderAllBlocks
+          ? markdown.blocks
+          : _getClosedBlocks(markdown, isStreamingComplete),
     );
     _rebuild();
   }
@@ -502,6 +539,7 @@ class MarkdownPainter {
   /// Animation configuration.
   /// 动画配置
   MarkdownAnimationConfig animationConfig;
+  bool renderAllBlocks;
 
   /// Notifier indicating whether streaming is complete.
   /// 流式输出是否完成的通知器
@@ -728,7 +766,7 @@ class MarkdownPainter {
       _filteredBlocksToRender() {
     final isReplacement =
         animationConfig.mode == MarkdownAnimationMode.contentReplacement;
-    final sourceBlocks = isReplacement
+    final sourceBlocks = isReplacement || renderAllBlocks
         ? _markdown.blocks
         : animationConfig.enabled
             ? _getClosedBlocks(_markdown, _isStreamingComplete)
@@ -1258,17 +1296,20 @@ class MarkdownPainter {
     ValueNotifier<bool>? isStreamingComplete,
     List<MarkdownBlockId>? blockIds,
     Map<MarkdownBlockId, String>? replacementValues,
+    bool renderAllBlocks = false,
   }) {
     final modeChanged = this.animationConfig.mode != animationConfig.mode;
     final configChanged = this.animationConfig != animationConfig;
     final streamingCompleteChanged =
         _isStreamingComplete != isStreamingComplete;
+    final renderAllBlocksChanged = this.renderAllBlocks != renderAllBlocks;
 
     if (modeChanged) {
       _disposeAnimationControllers();
       _renderedBlockIdsBeforeRebuild = null;
     }
     this.animationConfig = animationConfig;
+    this.renderAllBlocks = renderAllBlocks;
     _isStreamingComplete = isStreamingComplete;
     _previousReplacementValues =
         modeChanged ? replacementValues : _replacementValues;
@@ -1278,7 +1319,9 @@ class MarkdownPainter {
     // Check if closed block count changed (for animation)
     final oldClosedCount = _lastClosedCount;
     final oldClosedSignature = _lastClosedSignature;
-    final newClosedBlocks = _getClosedBlocks(markdown, isStreamingComplete);
+    final newClosedBlocks = renderAllBlocks
+        ? markdown.blocks
+        : _getClosedBlocks(markdown, isStreamingComplete);
     final newClosedCount = newClosedBlocks.length;
     final newClosedSignature = _closedBlocksSignature(newClosedBlocks);
     final closedCountChanged = newClosedCount != oldClosedCount;
@@ -1289,7 +1332,8 @@ class MarkdownPainter {
         !configChanged &&
         !closedCountChanged &&
         !closedContentChanged &&
-        !streamingCompleteChanged) {
+        !streamingCompleteChanged &&
+        !renderAllBlocksChanged) {
       return false;
     }
 
@@ -3245,7 +3289,12 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final totalMin = min.reduce((a, b) => a + b);
 
     if (totalNatural <= availableWidth) {
-      return natural;
+      if (!availableWidth.isFinite || totalNatural <= 0.001) return natural;
+      final extraWidth = availableWidth - totalNatural;
+      return <double>[
+        for (final width in natural)
+          width + extraWidth * (width / totalNatural),
+      ];
     }
 
     if (totalMin <= availableWidth) {
