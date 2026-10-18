@@ -433,6 +433,38 @@ void main() {
       );
     });
 
+    testWidgets('paints selection over opaque table row backgrounds',
+        (tester) async {
+      const stripe = Color(0xFFF2F2F2);
+      await _pumpMarkdown(
+        tester,
+        markdown: Markdown.fromString(
+          '| Tool | Use |\n'
+          '| --- | --- |\n'
+          '| A | 1 |\n'
+          '| B | 2 |',
+        ),
+        theme: MarkdownThemeData(
+          textStyle: const TextStyle(fontSize: 14),
+          tableAlternateRowBackgroundColor: stripe,
+        ),
+      );
+      _selectAll(tester);
+      await tester.pump();
+
+      final renderObject =
+          tester.renderObject<MarkdownRenderObject>(_renderLeaf);
+      final selectionColor = DefaultSelectionStyle.of(
+        tester.element(find.byType(MarkdownWidget)),
+      ).selectionColor;
+      expect(
+        renderObject,
+        paints
+          ..something((method, _) => method == #drawPicture)
+          ..rect(color: selectionColor),
+      );
+    });
+
     testWidgets('does not create fragments without SelectionArea',
         (tester) async {
       await tester.pumpWidget(

@@ -419,17 +419,17 @@ class MarkdownRenderObject extends RenderBox
       return; // If the markdown is empty, do not paint anything.
     // 如果 Markdown 为空，则不绘制任何内容
 
-    for (final fragment in _selectionFragments) {
-      fragment.paintSelection(context, offset);
-    }
-
     final canvas = context.canvas
       ..save()
       ..translate(offset.dx, offset.dy);
     _painter.paint(canvas, size);
     canvas.restore();
 
+    // Paint highlights over the content, as RenderParagraph does, so opaque
+    // block backgrounds such as table row stripes cannot hide them.
+    // 在内容之上绘制选区高亮，避免表格斑马纹等不透明背景遮住选区
     for (final fragment in _selectionFragments) {
+      fragment.paintSelection(context, offset);
       fragment.paintHandleLayers(context, offset);
     }
 
