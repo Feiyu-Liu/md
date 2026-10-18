@@ -9,6 +9,10 @@
 - **ADDED**: Selection preservation for compatible streaming updates.
 - **CHANGED**: Built-in links now use gesture-arena hit testing so selection
   drags do not trigger link taps.
+- **ADDED**: `SelectableBlockPainter` lets custom block painters expose their
+  text to selection.
+- **FIXED**: Selection highlights paint above opaque block backgrounds such as
+  table row stripes.
 
 ## 0.0.8
 

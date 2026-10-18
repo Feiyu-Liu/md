@@ -501,6 +501,28 @@ void main() {
       expect(selection, isNull);
     });
 
+    testWidgets('selectable custom block painters join the selection',
+        (tester) async {
+      SelectedContent? selection;
+      final theme = MarkdownThemeData(
+        textStyle: const TextStyle(fontSize: 14),
+        builder: (_, __) => _SelectableCustomBlockPainter('custom text'),
+      );
+      await _pumpMarkdown(
+        tester,
+        markdown: Markdown.fromString('custom painter'),
+        theme: theme,
+        onSelectionChanged: (value) => selection = value,
+      );
+
+      final renderObject =
+          tester.renderObject<MarkdownRenderObject>(_renderLeaf);
+      expect(renderObject.debugSelectionFragmentCount, 1);
+      _selectAll(tester);
+      await tester.pump();
+      expect(selection?.plainText, 'custom text');
+    });
+
     testWidgets('link taps fire once and selection drags do not tap',
         (tester) async {
       var taps = 0;
@@ -607,4 +629,33 @@ class _CustomBlockPainter implements BlockPainter {
 
   @override
   void dispose() {}
+}
+
+class _SelectableCustomBlockPainter extends _CustomBlockPainter
+    implements SelectableBlockPainter {
+  _SelectableCustomBlockPainter(String text)
+      : _text = TextPainter(
+          text: TextSpan(text: text, style: const TextStyle(fontSize: 14)),
+          textDirection: TextDirection.ltr,
+        );
+
+  final TextPainter _text;
+
+  @override
+  Size layout(double width) {
+    _text.layout(maxWidth: width - 8);
+    return _size = Size(width, _text.height + 8);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size, double offset) =>
+      _text.paint(canvas, Offset(4, offset + 4));
+
+  @override
+  List<SelectableBlockText> get selectableTexts => <SelectableBlockText>[
+        SelectableBlockText(painter: _text, offset: const Offset(4, 4)),
+      ];
+
+  @override
+  void dispose() => _text.dispose();
 }

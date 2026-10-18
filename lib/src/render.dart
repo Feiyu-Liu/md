@@ -1864,6 +1864,15 @@ class MarkdownPainter {
       case BlockPainter$Spacer():
       case BlockPainter$Divider():
         return const <MarkdownSelectionFragmentDescriptor>[];
+      case SelectableBlockPainter(:final selectableTexts):
+        return <MarkdownSelectionFragmentDescriptor>[
+          for (final (index, text) in selectableTexts.indexed)
+            descriptor(
+              text.painter,
+              text.offset,
+              suffix: index == selectableTexts.length - 1 ? '' : '\n',
+            ),
+        ];
       default:
         return const <MarkdownSelectionFragmentDescriptor>[];
     }
@@ -2066,6 +2075,34 @@ abstract interface class BlockPainter {
   /// Dispose all resources used by the painter.
   /// 释放绘制器使用的所有资源
   void dispose();
+}
+
+/// A run of text inside a custom block that takes part in Markdown selection.
+/// 自定义块中参与 Markdown 选区的一段文本
+@immutable
+final class SelectableBlockText {
+  /// Creates a selectable run painted by [painter] at [offset].
+  const SelectableBlockText({required this.painter, required this.offset});
+
+  /// The laid-out painter that draws the text.
+  /// 绘制该文本且已完成布局的绘制器
+  final TextPainter painter;
+
+  /// Where [painter] paints, relative to the block's top-left corner.
+  /// [painter] 的绘制位置，相对于块的左上角
+  final Offset offset;
+}
+
+/// A custom [BlockPainter] whose text is selectable under `SelectionArea`.
+///
+/// Custom painters are not selectable by default. Implement this to expose
+/// the text runs that should be selected and copied, in reading order.
+/// 可在 `SelectionArea` 中选中文本的自定义块绘制器。
+/// 自定义绘制器默认不可选中；实现此接口并按阅读顺序暴露需要选中和复制的文本。
+abstract interface class SelectableBlockPainter implements BlockPainter {
+  /// The selectable text runs, valid after [layout].
+  /// 可选中的文本段，在 [layout] 之后有效
+  List<SelectableBlockText> get selectableTexts;
 }
 
 @meta.internal
